@@ -134,29 +134,43 @@ export class OrgAuthService {
 
   /**
    * Log in as an organization admin.
-   * Since org admins are persons too, we look them up by email and verify
-   * they have the 'Org Admin' role.
+   * Requires org_slug to scope the lookup — after migration 009, email is only
+   * unique per organization, so we must scope by org to find the right person.
    *
    * @param {Object} credentials
+   * @param {string} credentials.org_slug
    * @param {string} credentials.email
    * @param {string} credentials.password
    */
-  async login({ email, password }) {
-    // 1. Find the person by email (org admins are unique by email across the system
-    //    because they are typically the first person in an org)
+  async login({ org_slug, email, password }) {
+    // 1. Resolve the org by slug first
+    const orgResult = await db.query(
+      `SELECT id, name, slug, is_active FROM organizations WHERE slug = $1`,
+      [org_slug]
+    );
+
+    if (orgResult.rows.length === 0) {
+      throw new AppError('Invalid credentials', 401);
+    }
+
+    const org = orgResult.rows[0];
+
+    if (!org.is_active) {
+      throw new AppError('This organization account has been suspended.', 403);
+    }
+
+    // 2. Find the person by email scoped to this organization
     const result = await db.query(
       `SELECT
          p.id, p.first_name, p.last_name, p.email, p.password_hash,
-         p.organization_id, p.is_active,
-         o.name AS org_name, o.slug AS org_slug
+         p.organization_id, p.is_active
        FROM persons p
-       JOIN organizations o ON o.id = p.organization_id
-       WHERE p.email = $1`,
-      [email]
+       WHERE p.organization_id = $1 AND p.email = $2`,
+      [org.id, email]
     );
 
     if (result.rows.length === 0) {
-      throw new AppError('Invalid email or password', 401);
+      throw new AppError('Invalid credentials', 401);
     }
 
     const person = result.rows[0];
@@ -165,13 +179,13 @@ export class OrgAuthService {
       throw new AppError('Account is deactivated. Please contact your administrator.', 403);
     }
 
-    // 2. Verify password
+    // 3. Verify password
     const isValid = await bcrypt.compare(password, person.password_hash);
     if (!isValid) {
-      throw new AppError('Invalid email or password', 401);
+      throw new AppError('Invalid credentials', 401);
     }
 
-    // 3. Fetch their roles to confirm they are an org admin
+    // 4. Fetch their roles
     const rolesResult = await db.query(
       `SELECT r.name FROM person_roles pr
        JOIN roles r ON r.id = pr.role_id
@@ -180,7 +194,7 @@ export class OrgAuthService {
     );
     const roles = rolesResult.rows.map((r) => r.name);
 
-    // 4. Generate JWT
+    // 5. Generate JWT
     const tokens = generateTokens({
       person_id: person.id,
       organization_id: person.organization_id,
@@ -195,8 +209,8 @@ export class OrgAuthService {
         last_name: person.last_name,
         email: person.email,
         organization_id: person.organization_id,
-        org_name: person.org_name,
-        org_slug: person.org_slug,
+        org_name: org.name,
+        org_slug: org.slug,
       },
       roles,
       tokens,

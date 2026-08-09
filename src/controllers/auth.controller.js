@@ -16,6 +16,12 @@ export const registerOrg = async (req, res, next) => {
       throw new AppError('Missing required fields: org_name, org_slug, admin_first_name, admin_last_name, admin_email, admin_password', 400);
     }
 
+    // Basic email format check
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(admin_email)) {
+      throw new AppError('Invalid email format', 400);
+    }
+
     if (admin_password.length < 8) {
       throw new AppError('Password must be at least 8 characters', 400);
     }
@@ -23,11 +29,12 @@ export const registerOrg = async (req, res, next) => {
     const service = AuthFactory.create('org');
     const result = await service.register({
       org_name,
-      org_slug: org_slug.toLowerCase().replace(/\s+/g, '-'),
+      // Sanitize slug: lowercase, spaces → hyphens, strip all non-alphanumeric except hyphens
+      org_slug: org_slug.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''),
       org_type,
       admin_first_name,
       admin_last_name,
-      admin_email: admin_email.toLowerCase(),
+      admin_email: admin_email.toLowerCase().trim(),
       admin_password,
     });
 
@@ -49,15 +56,16 @@ export const registerOrg = async (req, res, next) => {
  */
 export const loginOrg = async (req, res, next) => {
   try {
-    const { email, password } = req.body;
+    const { org_slug, email, password } = req.body;
 
-    if (!email || !password) {
-      throw new AppError('email and password are required', 400);
+    if (!org_slug || !email || !password) {
+      throw new AppError('org_slug, email and password are required', 400);
     }
 
     const service = AuthFactory.create('org');
     const result = await service.login({
-      email: email.toLowerCase(),
+      org_slug: org_slug.toLowerCase(),
+      email: email.toLowerCase().trim(),
       password,
     });
 
