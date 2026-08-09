@@ -3,7 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import { env } from './config/env.js';
-import healthRouter from './routes/health.js';
+import router from './routes/index.js';
 import { errorHandler } from './middlewares/errorHandler.js';
 
 const app = express();
@@ -18,10 +18,10 @@ app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Routes mounting
-app.use('/api/health', healthRouter);
+// Mount all API routes
+app.use('/api', router);
 
-// Central error handler
+// Central error handler (must be last)
 app.use(errorHandler);
 
 export default app;
