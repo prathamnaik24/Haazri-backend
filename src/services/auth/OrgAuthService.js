@@ -83,9 +83,9 @@ export class OrgAuthService {
 
       // 6. Assign that role to the admin person
       await client.query(
-        `INSERT INTO person_roles (organization_id, person_id, role_id)
-         VALUES ($1, $2, $3)`,
-        [organization.id, person.id, role.id]
+        `INSERT INTO person_roles (person_id, role_id)
+         VALUES ($1, $2)`,
+        [person.id, role.id]
       );
 
       // 7. Log the creation in audit_logs
