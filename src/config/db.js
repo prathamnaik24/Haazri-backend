@@ -18,3 +18,6 @@ export const pool = new Pool(poolConfig);
 pool.on('error', (err) => {
   console.error('Unexpected error on idle client', err);
 });
+
+// Used by tests to cleanly shut down the connection pool after all tests run
+export const closePool = () => pool.end();
