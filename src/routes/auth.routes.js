@@ -4,6 +4,7 @@ import {
   loginOrg,
   loginEmployee,
   getMe,
+  acceptInvite,
 } from '../controllers/auth.controller.js';
 import { requireAuth } from '../middlewares/auth.js';
 
@@ -20,8 +21,10 @@ router.post('/org/login', loginOrg);
 /**
  * Employee Auth
  * POST /api/auth/employee/login — Employee login (requires org_slug)
+ * POST /api/auth/invite/accept   — Employee sets password via invite token
  */
 router.post('/employee/login', loginEmployee);
+router.post('/invite/accept', acceptInvite);
 
 /**
  * Common — get authenticated user context from token

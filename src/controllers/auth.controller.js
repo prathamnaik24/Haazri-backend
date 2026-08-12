@@ -1,5 +1,6 @@
 import { AuthFactory } from '../services/auth/AuthFactory.js';
 import { AppError } from '../middlewares/errorHandler.js';
+import { InviteService } from '../services/auth/InviteService.js';
 
 /**
  * POST /api/auth/org/register
@@ -122,6 +123,27 @@ export const getMe = async (req, res, next) => {
     res.status(200).json({
       status: 'success',
       data: { user: req.user },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/auth/invite/accept
+ * Consumes the registration invite token and sets the employee password.
+ */
+export const acceptInvite = async (req, res, next) => {
+  try {
+    const { token, password } = req.body;
+
+    const inviteService = new InviteService();
+    const result = await inviteService.acceptInvite(token, password);
+
+    res.status(200).json({
+      status: 'success',
+      message: result.message,
+      data: { email: result.email },
     });
   } catch (err) {
     next(err);
