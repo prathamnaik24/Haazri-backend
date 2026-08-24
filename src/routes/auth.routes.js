@@ -4,6 +4,8 @@ import {
   loginOrg,
   loginEmployee,
   getMe,
+  updateProfile,
+  changePassword,
   acceptInvite,
 } from '../controllers/auth.controller.js';
 import { requireAuth } from '../middlewares/auth.js';
@@ -27,9 +29,13 @@ router.post('/employee/login', loginEmployee);
 router.post('/invite/accept', acceptInvite);
 
 /**
- * Common — get authenticated user context from token
- * GET /api/auth/me              — Returns JWT payload (protected)
+ * User Profile & Account Settings (Protected)
+ * GET   /api/auth/me              — Returns user profile and token context
+ * PATCH /api/auth/profile         — Updates profile details (name, phone)
+ * POST  /api/auth/change-password — Changes user password
  */
 router.get('/me', requireAuth, getMe);
+router.patch('/profile', requireAuth, updateProfile);
+router.post('/change-password', requireAuth, changePassword);
 
 export default router;

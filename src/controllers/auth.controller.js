@@ -1,6 +1,8 @@
 import { AuthFactory } from '../services/auth/AuthFactory.js';
 import { AppError } from '../middlewares/errorHandler.js';
 import { InviteService } from '../services/auth/InviteService.js';
+import { db } from '../db/index.js';
+import bcrypt from 'bcryptjs';
 
 /**
  * POST /api/auth/org/register
@@ -114,15 +116,138 @@ export const loginEmployee = async (req, res, next) => {
 /**
  * GET /api/auth/me
  *
- * Returns the currently authenticated user's context from the JWT.
+ * Returns the currently authenticated user's profile and roles.
  * Protected route — requireAuth middleware must run before this.
  */
 export const getMe = async (req, res, next) => {
   try {
-    // req.user is populated by the requireAuth middleware
+    const personRes = await db.query(
+      `SELECT p.id, p.first_name, p.last_name, p.email, p.employee_id, p.phone_number, p.avatar_url, p.organization_id, o.name as org_name, o.slug as org_slug
+       FROM persons p
+       JOIN organizations o ON p.organization_id = o.id
+       WHERE p.id = $1`,
+      [req.user.person_id]
+    );
+
+    if (personRes.rows.length === 0) {
+      throw new AppError('User not found', 404);
+    }
+
     res.status(200).json({
       status: 'success',
-      data: { user: req.user },
+      data: { user: { ...req.user, ...personRes.rows[0] } },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * PATCH /api/auth/profile
+ *
+ * Updates the current user's profile (first_name, last_name, phone_number).
+ */
+export const updateProfile = async (req, res, next) => {
+  try {
+    const { first_name, last_name, phone_number } = req.body;
+    const personId = req.user.person_id;
+
+    const fields = [];
+    const values = [personId];
+    let vIdx = 2;
+
+    if (first_name !== undefined) {
+      fields.push(`first_name = $${vIdx++}`);
+      values.push(first_name.trim());
+    }
+    if (last_name !== undefined) {
+      fields.push(`last_name = $${vIdx++}`);
+      values.push(last_name.trim());
+    }
+    if (phone_number !== undefined) {
+      fields.push(`phone_number = $${vIdx++}`);
+      values.push(phone_number ? phone_number.trim() : null);
+    }
+
+    if (fields.length === 0) {
+      throw new AppError('No profile fields provided to update', 400);
+    }
+
+    fields.push(`updated_at = current_timestamp`);
+
+    const result = await db.query(
+      `UPDATE persons 
+       SET ${fields.join(', ')}
+       WHERE id = $1
+       RETURNING id, first_name, last_name, email, employee_id, phone_number`,
+      values
+    );
+
+    if (result.rows.length === 0) {
+      throw new AppError('User not found', 404);
+    }
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Profile updated successfully',
+      data: { user: result.rows[0] },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/auth/change-password
+ *
+ * Changes the current user's password.
+ * Body: { currentPassword, newPassword }
+ */
+export const changePassword = async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    const personId = req.user.person_id;
+
+    if (!currentPassword || !newPassword) {
+      throw new AppError('Current password and new password are required', 400);
+    }
+
+    if (newPassword.length < 8) {
+      throw new AppError('New password must be at least 8 characters long', 400);
+    }
+
+    const personRes = await db.query(
+      'SELECT id, password_hash, organization_id FROM persons WHERE id = $1',
+      [personId]
+    );
+
+    if (personRes.rows.length === 0) {
+      throw new AppError('User not found', 404);
+    }
+
+    const person = personRes.rows[0];
+
+    const isMatch = await bcrypt.compare(currentPassword, person.password_hash);
+    if (!isMatch) {
+      throw new AppError('The current password you entered is incorrect', 400);
+    }
+
+    const newHash = await bcrypt.hash(newPassword, 12);
+
+    await db.query(
+      'UPDATE persons SET password_hash = $1, updated_at = current_timestamp WHERE id = $2',
+      [newHash, personId]
+    );
+
+    await db.query(
+      `INSERT INTO audit_logs (organization_id, entity_type, entity_id, action, changed_by, reason)
+       VALUES ($1, 'person', $2, 'UPDATE', $2, 'User changed account password')`,
+      [person.organization_id, personId]
+    );
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Password updated successfully',
     });
   } catch (err) {
     next(err);

@@ -3,6 +3,8 @@ import {
   createEmployee,
   listEmployees,
   getEmployeeById,
+  resendInvite,
+  updateEmployee,
 } from '../controllers/org.controller.js';
 import { requireAuth } from '../middlewares/auth.js';
 import { requireTenant } from '../middlewares/tenant.js';
@@ -19,5 +21,7 @@ router.use(requireTenant);
 router.post('/employees', createEmployee);
 router.get('/employees', listEmployees);
 router.get('/employees/:id', getEmployeeById);
+router.patch('/employees/:id', updateEmployee);
+router.post('/employees/:id/resend-invite', resendInvite);
 
 export default router;

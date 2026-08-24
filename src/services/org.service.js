@@ -224,4 +224,173 @@ export class OrgService {
       roles: rolesResult.rows.map((r) => r.name),
     };
   }
+
+  /**
+   * Update an employee's details, position assignment, role assignment, or activation status
+   */
+  async updateEmployee(tenantId, employeeId, updates, changedBy) {
+    const { first_name, last_name, employee_id, is_active, position_id, role_id } = updates;
+
+    const fields = [];
+    const values = [tenantId, employeeId];
+    let vIdx = 3;
+
+    if (first_name !== undefined) {
+      fields.push(`first_name = $${vIdx++}`);
+      values.push(first_name);
+    }
+    if (last_name !== undefined) {
+      fields.push(`last_name = $${vIdx++}`);
+      values.push(last_name);
+    }
+    if (employee_id !== undefined) {
+      fields.push(`employee_id = $${vIdx++}`);
+      values.push(employee_id);
+    }
+    if (is_active !== undefined) {
+      fields.push(`is_active = $${vIdx++}`);
+      values.push(is_active);
+    }
+
+    const client = await db.getClient();
+    try {
+      await client.query('BEGIN');
+
+      let person = null;
+      if (fields.length > 0) {
+        fields.push(`updated_at = current_timestamp`);
+        const result = await client.query(
+          `UPDATE persons 
+           SET ${fields.join(', ')}
+           WHERE organization_id = $1 AND id = $2
+           RETURNING id, first_name, last_name, employee_id, is_active`,
+          values
+        );
+
+        if (result.rows.length === 0) {
+          throw new AppError('Employee not found', 404);
+        }
+        person = result.rows[0];
+      } else {
+        const check = await client.query(
+          `SELECT id, first_name, last_name, employee_id, is_active FROM persons WHERE organization_id = $1 AND id = $2`,
+          [tenantId, employeeId]
+        );
+        if (check.rows.length === 0) {
+          throw new AppError('Employee not found', 404);
+        }
+        person = check.rows[0];
+      }
+
+      // Handle position assignment update if position_id is explicitly provided
+      if (position_id !== undefined) {
+        // End existing active primary assignment(s)
+        await client.query(
+          `UPDATE position_assignments 
+           SET end_date = current_date, is_primary = false 
+           WHERE person_id = $1 AND (end_date IS NULL OR end_date >= current_date)`,
+          [employeeId]
+        );
+
+        if (position_id && position_id.trim() !== '') {
+          // Verify position exists in organization
+          const posCheck = await client.query(
+            'SELECT id, title, path FROM positions WHERE organization_id = $1 AND id = $2',
+            [tenantId, position_id]
+          );
+          if (posCheck.rows.length === 0) {
+            throw new AppError(`Position with ID "${position_id}" not found in this organization`, 404);
+          }
+
+          // Create new primary assignment
+          await client.query(
+            `INSERT INTO position_assignments (person_id, position_id, is_primary, start_date)
+             VALUES ($1, $2, true, current_date)`,
+            [employeeId, position_id]
+          );
+        }
+      }
+
+      // Handle role assignment update if role_id is explicitly provided
+      if (role_id !== undefined) {
+        await client.query('DELETE FROM person_roles WHERE person_id = $1', [employeeId]);
+        if (role_id && role_id.trim() !== '') {
+          const roleCheck = await client.query(
+            'SELECT id FROM roles WHERE organization_id = $1 AND id = $2',
+            [tenantId, role_id]
+          );
+          if (roleCheck.rows.length === 0) {
+            throw new AppError(`Role with ID "${role_id}" not found in this organization`, 404);
+          }
+          await client.query(
+            'INSERT INTO person_roles (person_id, role_id) VALUES ($1, $2)',
+            [employeeId, role_id]
+          );
+        }
+      }
+
+      await client.query(
+        `INSERT INTO audit_logs (organization_id, entity_type, entity_id, action, new_data, changed_by, reason)
+         VALUES ($1, 'person', $2, 'UPDATE', $3::jsonb, $4, 'Employee details or role/position updated')`,
+        [tenantId, employeeId, JSON.stringify(updates), changedBy]
+      );
+
+      await client.query('COMMIT');
+      return person;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Resend an invite token for an employee
+   */
+  async resendInvite(tenantId, employeeId, invitedBy) {
+    const client = await db.getClient();
+    try {
+      await client.query('BEGIN');
+
+      const empResult = await client.query(
+        'SELECT id, first_name, last_name, email FROM persons WHERE organization_id = $1 AND id = $2',
+        [tenantId, employeeId]
+      );
+
+      if (empResult.rows.length === 0) {
+        throw new AppError('Employee not found', 404);
+      }
+      const employee = empResult.rows[0];
+
+      const rawToken = crypto.randomBytes(32).toString('hex');
+      const tokenHash = await bcrypt.hash(rawToken, 10);
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+      await client.query(
+        `UPDATE org_invite_tokens SET expires_at = current_timestamp WHERE organization_id = $1 AND email = $2 AND used_at IS NULL`,
+        [tenantId, employee.email]
+      );
+
+      await client.query(
+        `INSERT INTO org_invite_tokens (organization_id, email, token_hash, invited_by, expires_at)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [tenantId, employee.email, tokenHash, invitedBy, expiresAt]
+      );
+
+      await client.query(
+        `INSERT INTO audit_logs (organization_id, entity_type, entity_id, action, new_data, changed_by, reason)
+         VALUES ($1, 'person', $2, 'UPDATE', $3::jsonb, $4, 'Employee registration invitation resent')`,
+        [tenantId, employee.id, JSON.stringify({ email: employee.email }), invitedBy]
+      );
+
+      await client.query('COMMIT');
+      return { invite_token: rawToken };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
 }

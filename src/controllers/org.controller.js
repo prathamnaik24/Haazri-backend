@@ -31,6 +31,59 @@ export const createEmployee = async (req, res, next) => {
 };
 
 /**
+ * PATCH /api/org/employees/:id
+ * Scoped to Org Admins / HR Managers.
+ */
+export const updateEmployee = async (req, res, next) => {
+  try {
+    const tenantId = req.currentTenantId;
+    const employeeId = req.params.id;
+    const changedBy = req.user.person_id;
+
+    const roles = req.user.roles || [];
+    const isAuthorized = roles.includes('Org Admin') || roles.includes('HR Manager');
+    if (!isAuthorized) {
+      throw new AppError('Forbidden: Insufficient privileges to update employees', 403);
+    }
+
+    const result = await orgService.updateEmployee(tenantId, employeeId, req.body, changedBy);
+
+    res.status(200).json({
+      status: 'success',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/org/employees/:id/resend-invite
+ */
+export const resendInvite = async (req, res, next) => {
+  try {
+    const tenantId = req.currentTenantId;
+    const employeeId = req.params.id;
+    const invitedBy = req.user.person_id;
+
+    const roles = req.user.roles || [];
+    const isAuthorized = roles.includes('Org Admin') || roles.includes('HR Manager');
+    if (!isAuthorized) {
+      throw new AppError('Forbidden: Insufficient privileges to resend invites', 403);
+    }
+
+    const result = await orgService.resendInvite(tenantId, employeeId, invitedBy);
+
+    res.status(200).json({
+      status: 'success',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
  * GET /api/org/employees
  */
 export const listEmployees = async (req, res, next) => {

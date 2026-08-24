@@ -109,6 +109,9 @@ export class OrgAuthService {
       const tokens = generateTokens({
         person_id: person.id,
         organization_id: organization.id,
+        first_name: person.first_name,
+        last_name: person.last_name,
+        email: person.email,
         type: 'org_admin',
         roles: ['Org Admin'],
       });
@@ -198,6 +201,9 @@ export class OrgAuthService {
     const tokens = generateTokens({
       person_id: person.id,
       organization_id: person.organization_id,
+      first_name: person.first_name,
+      last_name: person.last_name,
+      email: person.email,
       type: 'org_admin',
       roles,
     });
