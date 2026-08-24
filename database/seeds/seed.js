@@ -14,17 +14,23 @@
  * Run AFTER: npm run db:migrate
  */
 
-require('dotenv').config();
-const { Client } = require('pg');
-const bcrypt = require('bcryptjs');
+import 'dotenv/config';
+import pg from 'pg';
+import bcrypt from 'bcryptjs';
 
-const client = new Client({
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '5432'),
-  database: process.env.DB_NAME || 'attendance_db',
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || '',
-});
+const { Client } = pg;
+
+const clientConfig = process.env.DATABASE_URL
+  ? { connectionString: process.env.DATABASE_URL }
+  : {
+      host: process.env.DB_HOST || 'localhost',
+      port: parseInt(process.env.DB_PORT || '5432'),
+      database: process.env.DB_NAME || 'attendance_db',
+      user: process.env.DB_USER || 'postgres',
+      password: process.env.DB_PASSWORD || '',
+    };
+
+const client = new Client(clientConfig);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
