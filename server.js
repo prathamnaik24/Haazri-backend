@@ -1,8 +1,10 @@
 import app from './src/app.js';
 import { env } from './src/config/env.js';
+import { startAbsenteeJob } from './src/jobs/markAbsentees.js';
 
 const server = app.listen(env.PORT, () => {
   console.log(`🚀 Attendance System Backend running in [${env.NODE_ENV}] mode on port ${env.PORT}`);
+  startAbsenteeJob();
 });
 
 // Handle termination signals
