@@ -119,6 +119,27 @@ export class HierarchyService {
         const oldDeptId = posRes.rows[0].department_id;
         const targetTitle = posRes.rows[0].title;
 
+        const assignedEmployeeRes = await client.query(
+          `SELECT pa.person_id AS employee_id,
+                  dept.name AS department_name, parent_pos.title AS parent_title,
+                  manager.id AS manager_person_id,
+                  CASE WHEN manager.id IS NULL THEN NULL ELSE CONCAT(manager.first_name, ' ', manager.last_name) END AS manager_name
+           FROM position_assignments pa
+           JOIN positions pos ON pa.position_id = pos.id
+           LEFT JOIN departments dept ON pos.department_id = dept.id
+           LEFT JOIN positions parent_pos ON pos.parent_id = parent_pos.id
+           LEFT JOIN position_assignments manager_assignment
+             ON manager_assignment.position_id = pos.parent_id
+            AND manager_assignment.is_primary = true
+            AND (manager_assignment.end_date IS NULL OR manager_assignment.end_date >= CURRENT_DATE)
+           LEFT JOIN persons manager ON manager_assignment.person_id = manager.id
+           WHERE pa.position_id = $1 AND pa.is_primary = true
+             AND (pa.end_date IS NULL OR pa.end_date >= CURRENT_DATE)
+           LIMIT 1`,
+          [positionId]
+        );
+        const assignedEmployee = assignedEmployeeRes.rows[0] || null;
+
         // Distinguish omitted parent (department-only) from explicit null (move to root).
         const parentSpecified = Object.prototype.hasOwnProperty.call(data, 'targetParentPositionId');
 
@@ -235,6 +256,60 @@ export class HierarchyService {
             reason || 'Position Hierarchy Reorganization'
           ]
         );
+
+        if (assignedEmployee) {
+          const currentEmployeeRes = await client.query(
+            `SELECT pos.department_id, dept.name AS department_name, pos.parent_id,
+                    parent_pos.title AS parent_title,
+                    manager.id AS manager_person_id,
+                    CASE WHEN manager.id IS NULL THEN NULL ELSE CONCAT(manager.first_name, ' ', manager.last_name) END AS manager_name
+             FROM position_assignments pa
+             JOIN positions pos ON pa.position_id = pos.id
+             LEFT JOIN departments dept ON pos.department_id = dept.id
+             LEFT JOIN positions parent_pos ON pos.parent_id = parent_pos.id
+             LEFT JOIN position_assignments manager_assignment
+               ON manager_assignment.position_id = pos.parent_id
+              AND manager_assignment.is_primary = true
+              AND (manager_assignment.end_date IS NULL OR manager_assignment.end_date >= CURRENT_DATE)
+             LEFT JOIN persons manager ON manager_assignment.person_id = manager.id
+             WHERE pa.person_id = $1 AND pa.position_id = $2 AND pa.is_primary = true
+               AND (pa.end_date IS NULL OR pa.end_date >= CURRENT_DATE)
+             LIMIT 1`,
+            [assignedEmployee.employee_id, positionId]
+          );
+          const currentEmployee = currentEmployeeRes.rows[0];
+
+          await client.query(
+            `INSERT INTO audit_logs (organization_id, entity_type, entity_id, action, old_data, new_data, changed_by, reason)
+             VALUES ($1, 'employee_mobility', $2, 'MOVE', $3::jsonb, $4::jsonb, $5, $6)`,
+            [
+              orgId,
+              assignedEmployee.employee_id,
+              JSON.stringify({
+                position_id: positionId,
+                position_title: targetTitle,
+                department_id: oldDeptId || null,
+                department_name: assignedEmployee.department_name || null,
+                parent_position_id: oldParentId || null,
+                parent_position_title: assignedEmployee.parent_title || null,
+                manager_person_id: assignedEmployee.manager_person_id || null,
+                manager_name: assignedEmployee.manager_name || null
+              }),
+              JSON.stringify({
+                position_id: positionId,
+                position_title: targetTitle,
+                department_id: currentEmployee?.department_id || null,
+                department_name: currentEmployee?.department_name || null,
+                parent_position_id: currentEmployee?.parent_id || null,
+                parent_position_title: currentEmployee?.parent_title || null,
+                manager_person_id: currentEmployee?.manager_person_id || null,
+                manager_name: currentEmployee?.manager_name || null
+              }),
+              operatorPersonId,
+              reason || 'Employee Internal Mobility'
+            ]
+          );
+        }
 
         await client.query('COMMIT');
         return {

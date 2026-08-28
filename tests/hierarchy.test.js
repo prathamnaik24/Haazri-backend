@@ -528,6 +528,15 @@ describe('Feature #1 Integration Tests — Organizational Structure & Hierarchy'
 
   describe('5. Internal Mobility & History Tracking', () => {
 
+    it('should return empty history for an employee with no mobility changes', async () => {
+      const res = await request(app)
+        .get(`/api/org/hierarchy/mobility/${hrManagerPersonAId}`)
+        .set('Authorization', `Bearer ${adminTokenA}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual([]);
+    });
+
     it('should retain a complete history of employee movements in audit logs', async () => {
       const res = await request(app)
         .get(`/api/org/hierarchy/mobility/${employeePersonAId}`)
@@ -544,6 +553,66 @@ describe('Feature #1 Integration Tests — Organizational Structure & Hierarchy'
       expect(logEntry.new_data.position_id).toBe(positionDevA);
       expect(logEntry.reason).toBe('Transferred to Sr Dev');
       expect(logEntry.actor_first_name).toBe('Admin');
+    });
+
+    it('should record position moves in employee mobility history', async () => {
+      const res = await request(app)
+        .patch('/api/org/hierarchy/move')
+        .set('Authorization', `Bearer ${adminTokenA}`)
+        .send({
+          type: 'position',
+          positionId: positionDevA,
+          targetParentPositionId: positionCtoA,
+          reason: 'Reporting line changed'
+        });
+
+      expect(res.status).toBe(200);
+
+      const history = await request(app)
+        .get(`/api/org/hierarchy/mobility/${employeePersonAId}`)
+        .set('Authorization', `Bearer ${adminTokenA}`);
+
+      expect(history.status).toBe(200);
+      expect(history.body.data[0].old_data.parent_position_id).toBe(positionCeoA);
+      expect(history.body.data[0].new_data.parent_position_id).toBe(positionCtoA);
+      expect(history.body.data[0].reason).toBe('Reporting line changed');
+    });
+
+    it('should record department-only changes in employee mobility history', async () => {
+      await db.query(
+        `INSERT INTO position_assignments (person_id, position_id, is_primary, start_date)
+         VALUES ($1, $2, true, CURRENT_DATE)`,
+        [hrManagerPersonAId, positionOpsLeadA]
+      );
+
+      const res = await request(app)
+        .patch('/api/org/hierarchy/move')
+        .set('Authorization', `Bearer ${adminTokenA}`)
+        .send({
+          type: 'position',
+          positionId: positionOpsLeadA,
+          targetDepartmentId: departmentSalesA,
+          reason: 'Department changed'
+        });
+
+      expect(res.status).toBe(200);
+
+      const history = await request(app)
+        .get(`/api/org/hierarchy/mobility/${hrManagerPersonAId}`)
+        .set('Authorization', `Bearer ${adminTokenA}`);
+
+      expect(history.status).toBe(200);
+      expect(history.body.data[0].old_data.department_id).toBe(departmentEngA);
+      expect(history.body.data[0].new_data.department_id).toBe(departmentSalesA);
+      expect(history.body.data[0].reason).toBe('Department changed');
+    });
+
+    it('should block cross-tenant mobility history access', async () => {
+      const res = await request(app)
+        .get(`/api/org/hierarchy/mobility/${employeePersonAId}`)
+        .set('Authorization', `Bearer ${adminTokenB}`);
+
+      expect(res.status).toBe(404);
     });
   });
 
