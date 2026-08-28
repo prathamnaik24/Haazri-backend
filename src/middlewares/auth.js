@@ -1,11 +1,12 @@
 import { verifyAccessToken } from '../utils/token.js';
 import { AppError } from './errorHandler.js';
+import { db } from '../db/index.js';
 
 /**
  * Middleware to protect routes that require authentication
  * Extracts JWT from the Authorization header and verifies it.
  */
-export const requireAuth = (req, res, next) => {
+export const requireAuth = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
     
@@ -15,6 +16,25 @@ export const requireAuth = (req, res, next) => {
 
     const token = authHeader.split(' ')[1];
     const decoded = verifyAccessToken(token);
+
+    // Fetch permissions from the database in real-time based on roles
+    let permissions = [];
+    if (decoded.roles && decoded.roles.includes('Org Admin')) {
+      const allPermsRes = await db.query('SELECT name FROM permissions');
+      permissions = allPermsRes.rows.map(r => r.name);
+    } else {
+      const permissionsRes = await db.query(
+        `SELECT DISTINCT p.name 
+         FROM person_roles pr
+         JOIN role_permissions rp ON pr.role_id = rp.role_id
+         JOIN permissions p ON rp.permission_id = p.id
+         WHERE pr.person_id = $1`,
+        [decoded.person_id]
+      );
+      permissions = permissionsRes.rows.map(r => r.name);
+    }
+    
+    decoded.permissions = permissions;
 
     // Attach user data to the request object
     req.user = decoded;
@@ -29,3 +49,4 @@ export const requireAuth = (req, res, next) => {
     }
   }
 };
+
