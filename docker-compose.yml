@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  # ── PostgreSQL Database Container ─────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: attendance_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres_burra123}
+      POSTGRES_DB: ${DB_NAME:-attendance_db}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-attendance_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend Node.js Express API Container ────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: haazri_backend
+    restart: unless-stopped
+    ports:
+      - "${PORT:-5002}:5002"
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: ${PORT:-5002}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-attendance_db}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres_burra123}
+      DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres_burra123}@db:5432/${DB_NAME:-attendance_db}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev_access_secret_burraa_2026}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-dev_refresh_secret_burraa_2026}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+    volumes:
+      - .:/app
+      - /app/node_modules
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
