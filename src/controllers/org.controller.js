@@ -121,3 +121,30 @@ export const getEmployeeById = async (req, res, next) => {
     next(err);
   }
 };
+
+/**
+ * DELETE /api/org/employees/:id
+ * Scoped to Org Admins / HR Managers.
+ */
+export const deleteEmployee = async (req, res, next) => {
+  try {
+    const tenantId = req.currentTenantId;
+    const employeeId = req.params.id;
+    const deletedBy = req.user.person_id;
+
+    const roles = req.user.roles || [];
+    const isAuthorized = roles.includes('Org Admin') || roles.includes('HR Manager');
+    if (!isAuthorized) {
+      throw new AppError('Forbidden: Insufficient privileges to delete employees', 403);
+    }
+
+    const result = await orgService.deleteEmployee(tenantId, employeeId, deletedBy);
+
+    res.status(200).json({
+      status: 'success',
+      message: result.message,
+    });
+  } catch (err) {
+    next(err);
+  }
+};

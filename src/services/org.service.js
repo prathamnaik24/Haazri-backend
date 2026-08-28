@@ -134,15 +134,22 @@ export class OrgService {
    * List all employees in the organization (paginated).
    */
   async listEmployees(tenantId, options = {}) {
-    const { limit = 20, offset = 0 } = options;
+    const { limit = 50, offset = 0 } = options;
 
     const result = await db.query(
-      `SELECT 
-         p.id, p.first_name, p.last_name, p.email, p.phone_number, p.avatar_url, p.is_active, p.joined_at,
-         pos.id AS position_id, pos.title AS position_title, pos.path AS position_path
+      `WITH primary_positions AS (
+         SELECT DISTINCT ON (pa.person_id)
+           pa.person_id, pos.id AS position_id, pos.title AS position_title, pos.path AS position_path
+         FROM position_assignments pa
+         JOIN positions pos ON pos.id = pa.position_id
+         WHERE pa.is_primary = true AND (pa.end_date IS NULL OR pa.end_date >= current_date)
+         ORDER BY pa.person_id, pa.created_at DESC
+       )
+       SELECT 
+         p.id, p.first_name, p.last_name, p.email, p.employee_id, p.phone_number, p.avatar_url, p.is_active, p.joined_at,
+         pp.position_id, pp.position_title, pp.position_path
        FROM persons p
-       LEFT JOIN position_assignments pa ON pa.person_id = p.id AND pa.is_primary = true AND (pa.end_date IS NULL OR pa.end_date >= current_date)
-       LEFT JOIN positions pos ON pos.id = pa.position_id
+       LEFT JOIN primary_positions pp ON pp.person_id = p.id
        WHERE p.organization_id = $1
        ORDER BY p.last_name ASC, p.first_name ASC
        LIMIT $2 OFFSET $3`,
@@ -160,6 +167,7 @@ export class OrgService {
         first_name: row.first_name,
         last_name: row.last_name,
         email: row.email,
+        employee_id: row.employee_id,
         phone_number: row.phone_number,
         avatar_url: row.avatar_url,
         is_active: row.is_active,
@@ -174,6 +182,53 @@ export class OrgService {
       })),
       total: parseInt(countResult.rows[0].count, 10),
     };
+  }
+
+  /**
+   * Delete an employee record (and associated position/role assignments).
+   */
+  async deleteEmployee(tenantId, employeeId, deletedBy) {
+    const client = await db.getClient();
+    try {
+      await client.query('BEGIN');
+
+      const empRes = await client.query(
+        'SELECT id, first_name, last_name, email FROM persons WHERE organization_id = $1 AND id = $2',
+        [tenantId, employeeId]
+      );
+
+      if (empRes.rows.length === 0) {
+        throw new AppError('Employee not found', 404);
+      }
+
+      const emp = empRes.rows[0];
+
+      // Delete position assignments & person roles
+      await client.query('DELETE FROM position_assignments WHERE person_id = $1', [employeeId]);
+      await client.query('DELETE FROM person_roles WHERE person_id = $1', [employeeId]);
+      await client.query('DELETE FROM org_invite_tokens WHERE organization_id = $1 AND email = $2', [tenantId, emp.email]);
+      await client.query('DELETE FROM financial_records WHERE person_id = $1', [employeeId]);
+      await client.query('DELETE FROM attendance_events WHERE person_id = $1', [employeeId]);
+      await client.query('DELETE FROM leave_requests WHERE person_id = $1', [employeeId]);
+
+      // Delete person
+      await client.query('DELETE FROM persons WHERE id = $1 AND organization_id = $2', [employeeId, tenantId]);
+
+      // Audit log
+      await client.query(
+        `INSERT INTO audit_logs (organization_id, entity_type, entity_id, action, new_data, changed_by, reason)
+         VALUES ($1, 'person', $2, 'DELETE', $3::jsonb, $4, 'Employee removed by organization admin')`,
+        [tenantId, employeeId, JSON.stringify({ email: emp.email, name: `${emp.first_name} ${emp.last_name}` }), deletedBy]
+      );
+
+      await client.query('COMMIT');
+      return { message: `Employee ${emp.first_name} ${emp.last_name} deleted successfully` };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   /**

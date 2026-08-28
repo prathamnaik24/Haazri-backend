@@ -6,6 +6,7 @@ export default defineConfig({
     environment: 'node',
     // Give each test 30 seconds — DB operations can be slow on first run
     testTimeout: 30000,
+    hookTimeout: 30000,
     // Run test files sequentially to avoid DB race conditions
     pool: 'forks',
     poolOptions: {

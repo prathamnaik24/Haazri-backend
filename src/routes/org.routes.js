@@ -5,6 +5,7 @@ import {
   getEmployeeById,
   resendInvite,
   updateEmployee,
+  deleteEmployee,
 } from '../controllers/org.controller.js';
 import {
   getHierarchy,
@@ -28,6 +29,7 @@ router.post('/employees', createEmployee);
 router.get('/employees', listEmployees);
 router.get('/employees/:id', getEmployeeById);
 router.patch('/employees/:id', updateEmployee);
+router.delete('/employees/:id', deleteEmployee);
 router.post('/employees/:id/resend-invite', resendInvite);
 
 /**

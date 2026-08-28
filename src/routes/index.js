@@ -4,6 +4,8 @@ import authRouter from './auth.routes.js';
 import orgRouter from './org.routes.js';
 import attendanceRouter from './attendance.routes.js';
 import leaveRouter from './leave.routes.js';
+import settingsRouter from './settings.routes.js';
+import financeRouter from './finance.routes.js';
 
 import roleRouter from './role.routes.js';
 import orgStructureRouter from './orgStructure.routes.js';
@@ -17,6 +19,8 @@ router.use('/auth', authRouter);
 router.use('/org', orgRouter);
 router.use('/attendance', attendanceRouter);
 router.use('/leaves', leaveRouter);
+router.use('/settings', settingsRouter);
+router.use('/finance', financeRouter);
 
 router.use('/admin/roles', roleRouter);
 router.use('/admin/org-structure', orgStructureRouter);

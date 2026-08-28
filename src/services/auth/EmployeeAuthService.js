@@ -22,7 +22,13 @@ export class EmployeeAuthService {
    * @param {string} credentials.email
    * @param {string} credentials.password
    */
-  async login({ org_slug, email, password }) {
+  async login({ org_slug, email, employee_id, password }) {
+    const identifier = employee_id || email;
+
+    if (!identifier) {
+      throw new AppError('Email or Employee ID is required', 400);
+    }
+
     // 1. Resolve org by slug
     const orgResult = await db.query(
       `SELECT id, name, slug, is_active FROM organizations WHERE slug = $1`,
@@ -40,15 +46,14 @@ export class EmployeeAuthService {
       throw new AppError('This organization account has been suspended.', 403);
     }
 
-    // 2. Find the person by email within this specific organization
-    //    (email + org_id is the composite unique key after migration 009)
+    // 2. Find the person by email OR employee_id within this specific organization
     const personResult = await db.query(
       `SELECT
-         p.id, p.first_name, p.last_name, p.email,
+         p.id, p.first_name, p.last_name, p.email, p.employee_id,
          p.password_hash, p.is_active, p.organization_id
        FROM persons p
-       WHERE p.organization_id = $1 AND p.email = $2`,
-      [org.id, email]
+       WHERE p.organization_id = $1 AND (p.email = $2 OR p.employee_id = $2)`,
+      [org.id, identifier]
     );
 
     if (personResult.rows.length === 0) {

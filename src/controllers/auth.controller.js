@@ -90,16 +90,18 @@ export const loginOrg = async (req, res, next) => {
  */
 export const loginEmployee = async (req, res, next) => {
   try {
-    const { org_slug, email, password } = req.body;
+    const { org_slug, email, employee_id, password } = req.body;
+    const identifier = employee_id || email;
 
-    if (!org_slug || !email || !password) {
-      throw new AppError('org_slug, email and password are required', 400);
+    if (!org_slug || !identifier || !password) {
+      throw new AppError('org_slug, employee_id (or email), and password are required', 400);
     }
 
     const service = AuthFactory.create('employee');
     const result = await service.login({
       org_slug: org_slug.toLowerCase(),
-      email: email.toLowerCase(),
+      email: email ? email.toLowerCase() : null,
+      employee_id: employee_id ? employee_id.trim() : null,
       password,
     });
 
