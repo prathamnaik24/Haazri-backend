@@ -34,6 +34,8 @@ export const requireAuth = async (req, res, next) => {
       permissions = permissionsRes.rows.map(r => r.name);
     }
     
+    decoded.permissions = permissions;
+
     // Fetch live primary position_path from database in real-time to support dynamic org changes
     const posRes = await db.query(
       `SELECT pos.path::text AS position_path
