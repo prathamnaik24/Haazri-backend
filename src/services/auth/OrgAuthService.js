@@ -88,6 +88,19 @@ export class OrgAuthService {
         [person.id, role.id]
       );
 
+      // 6.5. Assign default active subscription plan (Growth) to the organization
+      const planRes = await client.query(
+        `SELECT id FROM subscription_plans WHERE slug = 'growth' LIMIT 1`
+      );
+      if (planRes.rows.length > 0) {
+        await client.query(
+          `INSERT INTO organization_subscriptions (organization_id, plan_id, status, current_period_start, current_period_end)
+           VALUES ($1, $2, 'active', NOW(), NOW() + INTERVAL '1 year')
+           ON CONFLICT (organization_id) DO NOTHING`,
+          [organization.id, planRes.rows[0].id]
+        );
+      }
+
       // 7. Log the creation in audit_logs
       await client.query(
         `INSERT INTO audit_logs (organization_id, entity_type, entity_id, action, new_data, changed_by, reason)

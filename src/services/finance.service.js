@@ -168,4 +168,114 @@ export class FinanceService {
 
     return result.rows[0];
   }
+
+  /**
+   * Get organization-level financial summary (CEO / Org Admin).
+   */
+  async getSummary(tenantId) {
+    // 1. Fetch current subscription
+    let subRes = await db.query(
+      `SELECT os.status, os.current_period_start, os.current_period_end,
+              sp.id as plan_id, sp.name as plan_name, sp.slug as plan_slug,
+              sp.max_employees, sp.price_cents, sp.currency
+       FROM organization_subscriptions os
+       JOIN subscription_plans sp ON sp.id = os.plan_id
+       WHERE os.organization_id = $1`,
+      [tenantId]
+    );
+
+    if (subRes.rows.length === 0) {
+      const growthRes = await db.query(`SELECT id FROM subscription_plans WHERE slug = 'growth' LIMIT 1`);
+      if (growthRes.rows.length > 0) {
+        await db.query(
+          `INSERT INTO organization_subscriptions (organization_id, plan_id, status, current_period_start, current_period_end)
+           VALUES ($1, $2, 'active', NOW(), NOW() + INTERVAL '1 year')
+           ON CONFLICT (organization_id) DO NOTHING`,
+          [tenantId, growthRes.rows[0].id]
+        );
+        subRes = await db.query(
+          `SELECT os.status, os.current_period_start, os.current_period_end,
+                  sp.id as plan_id, sp.name as plan_name, sp.slug as plan_slug,
+                  sp.max_employees, sp.price_cents, sp.currency
+           FROM organization_subscriptions os
+           JOIN subscription_plans sp ON sp.id = os.plan_id
+           WHERE os.organization_id = $1`,
+          [tenantId]
+        );
+      }
+    }
+
+    const currentSub = subRes.rows[0] || {
+      plan_name: 'Growth',
+      plan_slug: 'growth',
+      max_employees: 100,
+      price_cents: 0,
+      currency: 'USD',
+      status: 'active',
+      current_period_start: new Date().toISOString(),
+      current_period_end: new Date(Date.now() + 365 * 86400000).toISOString(),
+    };
+
+    // 2. Count active employees
+    const empRes = await db.query(
+      `SELECT COUNT(*)::int as count FROM persons WHERE organization_id = $1 AND is_active = true`,
+      [tenantId]
+    );
+    const employeeCount = empRes.rows[0]?.count || 0;
+
+    // 3. Sum total expenditures from financial records
+    const recRes = await db.query(
+      `SELECT COALESCE(SUM(amount), 0)::float as total FROM financial_records WHERE organization_id = $1`,
+      [tenantId]
+    );
+    const totalRecordsAmount = recRes.rows[0]?.total || 0;
+    const totalExpenditureCents = Math.round(totalRecordsAmount * 100) + (currentSub.price_cents || 0);
+
+    // 4. Department breakdown
+    const deptRes = await db.query(
+      `SELECT d.id as department_id, d.name,
+              COUNT(DISTINCT pa.person_id)::int as employee_count
+       FROM departments d
+       LEFT JOIN positions pos ON pos.department_id = d.id AND pos.is_active = true
+       LEFT JOIN position_assignments pa ON pa.position_id = pos.id AND pa.end_date IS NULL
+       WHERE d.organization_id = $1 AND d.is_active = true
+       GROUP BY d.id, d.name
+       ORDER BY d.name ASC`,
+      [tenantId]
+    );
+
+    const departmentBreakdown = deptRes.rows.map((dept) => ({
+      department_id: dept.department_id,
+      name: dept.name,
+      employee_count: dept.employee_count,
+      expenditure_cents: 0,
+    }));
+
+    // 5. Fetch latest financial snapshot
+    const snapRes = await db.query(
+      `SELECT * FROM financial_snapshots WHERE organization_id = $1 ORDER BY snapshot_date DESC LIMIT 1`,
+      [tenantId]
+    );
+
+    return {
+      organization_id: tenantId,
+      current_plan: {
+        id: currentSub.plan_id,
+        name: currentSub.plan_name,
+        slug: currentSub.plan_slug,
+        max_employees: currentSub.max_employees,
+        price_cents: currentSub.price_cents,
+        currency: currentSub.currency,
+      },
+      current_period: {
+        start: currentSub.current_period_start,
+        end: currentSub.current_period_end,
+      },
+      total_expenditure_cents: totalExpenditureCents,
+      employee_count: employeeCount,
+      department_breakdown: departmentBreakdown,
+      latest_snapshot: snapRes.rows[0] || null,
+    };
+  }
 }
+

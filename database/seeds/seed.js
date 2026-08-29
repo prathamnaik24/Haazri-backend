@@ -170,7 +170,7 @@ async function seed() {
     // ── 6. Roles ─────────────────────────────────────────────────────────────
     section('Roles');
 
-    const roleDefs = ['Org Admin', 'HR Manager', 'Employee'];
+    const roleDefs = ['Org Admin', 'CEO', 'HR Manager', 'Employee'];
     const roles = {};
 
     for (const name of roleDefs) {
@@ -201,6 +201,11 @@ async function seed() {
       { name: 'manage_attendance', description: 'Can edit and correct attendance records' },
       { name: 'approve_leaves',    description: 'Can approve or reject leave requests' },
       { name: 'view_payroll',      description: 'Can view payroll data' },
+      { name: 'finance:read',      description: 'Can view organization financial summary and reports' },
+      { name: 'finance:write',     description: 'Can modify financial settings and records' },
+      { name: 'billing:read',      description: 'Can view billing and subscription details' },
+      { name: 'billing:write',     description: 'Can update billing information' },
+      { name: 'subscription:manage', description: 'Can change organization subscription plan' },
     ];
 
     const perms = {};
@@ -221,7 +226,8 @@ async function seed() {
     section('Role-Permission Mappings');
 
     const rolePermMap = {
-      'Org Admin':  ['manage_org', 'manage_roles', 'manage_employees', 'view_attendance', 'manage_attendance', 'approve_leaves', 'view_payroll'],
+      'Org Admin':  ['manage_org', 'manage_roles', 'manage_employees', 'view_attendance', 'manage_attendance', 'approve_leaves', 'view_payroll', 'finance:read', 'finance:write', 'billing:read', 'billing:write', 'subscription:manage'],
+      'CEO':        ['manage_org', 'view_attendance', 'view_payroll', 'finance:read', 'billing:read', 'subscription:manage'],
       'HR Manager': ['manage_employees', 'view_attendance', 'approve_leaves'],
       'Employee':   ['view_attendance'],
     };
@@ -235,6 +241,34 @@ async function seed() {
         `, [roles[roleName].id, perms[permName].id]);
       }
       log(`✅ ${roleName.padEnd(15)} → [${permNames.join(', ')}]`);
+    }
+
+    // ── 8.5 Subscription Plans & Org Subscription ──────────────────────────────
+    section('Subscriptions');
+
+    const subPlans = [
+      { name: 'Starter', slug: 'starter', max_employees: 50, price_cents: 0, metadata: JSON.stringify({ features: ['basic_attendance', 'basic_leaves'] }) },
+      { name: 'Growth', slug: 'growth', max_employees: 100, price_cents: 0, metadata: JSON.stringify({ features: ['basic_attendance', 'basic_leaves', 'financial_dashboard', 'billing_portal', 'subscription_management'] }) },
+    ];
+
+    for (const p of subPlans) {
+      await client.query(`
+        INSERT INTO subscription_plans (name, slug, max_employees, price_cents, metadata)
+        VALUES ($1, $2, $3, $4, $5::jsonb)
+        ON CONFLICT (slug) DO UPDATE
+        SET name = EXCLUDED.name, max_employees = EXCLUDED.max_employees, price_cents = EXCLUDED.price_cents, metadata = EXCLUDED.metadata
+      `, [p.name, p.slug, p.max_employees, p.price_cents, p.metadata]);
+    }
+
+    const growthPlanRes = await client.query('SELECT id FROM subscription_plans WHERE slug = $1', ['growth']);
+    if (growthPlanRes.rows.length > 0) {
+      const growthPlanId = growthPlanRes.rows[0].id;
+      await client.query(`
+        INSERT INTO organization_subscriptions (organization_id, plan_id, status, current_period_start, current_period_end)
+        VALUES ($1, $2, 'active', NOW(), NOW() + INTERVAL '1 year')
+        ON CONFLICT (organization_id) DO NOTHING
+      `, [org.id, growthPlanId]);
+      log(`✅ Org Subscription: Active Growth plan assigned to ${org.name}`);
     }
 
     // ── 9. Assign Roles to Persons ───────────────────────────────────────────
