@@ -124,7 +124,7 @@ export const loginEmployee = async (req, res, next) => {
 export const getMe = async (req, res, next) => {
   try {
     const personRes = await db.query(
-      `SELECT p.id, p.first_name, p.last_name, p.email, p.employee_id, p.phone_number, p.avatar_url, p.organization_id, o.name as org_name, o.slug as org_slug
+      `SELECT p.id, p.first_name, p.last_name, p.email, p.employee_id, p.workday_id, p.phone_number, p.avatar_url, p.organization_id, o.name as org_name, o.slug as org_slug
        FROM persons p
        JOIN organizations o ON p.organization_id = o.id
        WHERE p.id = $1`,
@@ -181,7 +181,7 @@ export const updateProfile = async (req, res, next) => {
       `UPDATE persons 
        SET ${fields.join(', ')}
        WHERE id = $1
-       RETURNING id, first_name, last_name, email, employee_id, phone_number`,
+       RETURNING id, first_name, last_name, email, employee_id, workday_id, phone_number`,
       values
     );
 
