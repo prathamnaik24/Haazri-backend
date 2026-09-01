@@ -7,6 +7,8 @@ import leaveRouter from './leave.routes.js';
 import settingsRouter from './settings.routes.js';
 import financeRouter from './finance.routes.js';
 import subscriptionsRouter from './subscriptions.routes.js';
+import compensationRouter from './compensation.routes.js';
+import payrollRouter from './payroll.routes.js';
 
 import roleRouter from './role.routes.js';
 import orgStructureRouter from './orgStructure.routes.js';
@@ -23,6 +25,8 @@ router.use('/leaves', leaveRouter);
 router.use('/settings', settingsRouter);
 router.use('/finance', financeRouter);
 router.use('/subscriptions', subscriptionsRouter);
+router.use('/compensation', compensationRouter);
+router.use('/payroll', payrollRouter);
 
 router.use('/admin/roles', roleRouter);
 router.use('/admin/org-structure', orgStructureRouter);
