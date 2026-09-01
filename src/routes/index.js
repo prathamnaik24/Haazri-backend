@@ -12,6 +12,7 @@ import roleRouter from './role.routes.js';
 import orgStructureRouter from './orgStructure.routes.js';
 import reportRouter from './report.routes.js';
 import auditRouter from './audit.routes.js';
+import resignationRouter from './resignation.routes.js';
 
 const router = Router();
 
@@ -23,6 +24,7 @@ router.use('/leaves', leaveRouter);
 router.use('/settings', settingsRouter);
 router.use('/finance', financeRouter);
 router.use('/subscriptions', subscriptionsRouter);
+router.use('/resignation', resignationRouter);
 
 router.use('/admin/roles', roleRouter);
 router.use('/admin/org-structure', orgStructureRouter);
@@ -30,3 +32,4 @@ router.use('/admin/reports', reportRouter);
 router.use('/admin/audit', auditRouter);
 
 export default router;
+
