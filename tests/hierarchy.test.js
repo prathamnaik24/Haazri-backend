@@ -701,7 +701,25 @@ describe('Feature #1 Integration Tests — Organizational Structure & Hierarchy'
 
   describe('8. Explicit move-to-root', () => {
 
-    it('should move a node to root when targetParentPositionId is explicitly null', async () => {
+    it('should reject moving a node to root when a root already exists', async () => {
+      const res = await request(app)
+        .patch('/api/org/hierarchy/move')
+        .set('Authorization', `Bearer ${adminTokenA}`)
+        .send({
+          type: 'position',
+          positionId: positionHeadOpsA,
+          targetParentPositionId: null,
+          reason: 'Promote Head of Ops to root'
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('ORG_ALREADY_HAS_ROOT');
+    });
+
+    it('should move a node to root when existing root is deactivated', async () => {
+      // Temporarily deactivate old CEO to allow new root promotion
+      await db.query('UPDATE positions SET is_active = false WHERE id = $1', [positionCeoA]);
+
       const orgSlugLtree = ORG_A.org_slug.replace(/-/g, '_');
 
       const res = await request(app)

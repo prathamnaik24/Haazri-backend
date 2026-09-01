@@ -38,37 +38,46 @@ export class HierarchyService {
     const map = {};
     const roots = [];
 
-    // Initialize map
+    // Initialize map with unique position records
     for (const row of rows) {
-      map[row.id] = {
-        id: row.id,
-        title: row.title,
-        parent_id: row.parent_id,
-        path: row.path,
-        is_active: row.is_active,
-        department: row.department_id ? {
-          id: row.department_id,
-          name: row.department_name
-        } : null,
-        employee: row.person_id ? {
+      if (!map[row.id]) {
+        map[row.id] = {
+          id: row.id,
+          title: row.title,
+          parent_id: row.parent_id,
+          path: row.path,
+          is_active: row.is_active,
+          department: row.department_id ? {
+            id: row.department_id,
+            name: row.department_name
+          } : null,
+          employee: row.person_id ? {
+            id: row.person_id,
+            first_name: row.first_name,
+            last_name: row.last_name,
+            email: row.email
+          } : null,
+          children: []
+        };
+      } else if (!map[row.id].employee && row.person_id) {
+        map[row.id].employee = {
           id: row.person_id,
           first_name: row.first_name,
           last_name: row.last_name,
           email: row.email
-        } : null,
-        children: []
-      };
+        };
+      }
     }
 
-    // Build tree
-    for (const row of rows) {
-      const node = map[row.id];
-      if (row.parent_id && map[row.parent_id]) {
-        map[row.parent_id].children.push(node);
+    // Build tree from unique position nodes
+    for (const node of Object.values(map)) {
+      if (node.parent_id && map[node.parent_id]) {
+        map[node.parent_id].children.push(node);
       } else {
         roots.push(node);
       }
     }
+
 
     return roots;
   }
@@ -203,7 +212,20 @@ export class HierarchyService {
             [positionId, targetParentPositionId, newPath, oldPath, orgId]
           );
         } else if (parentSpecified && targetParentPositionId === null) {
-          // Explicit move to root
+          // Explicit move to root — enforce single-root constraint first
+          const existingRootCheck = await client.query(
+            `SELECT COUNT(*) AS cnt FROM positions
+             WHERE organization_id = $1 AND parent_id IS NULL AND is_active = true AND id <> $2`,
+            [orgId, positionId]
+          );
+          if (parseInt(existingRootCheck.rows[0].cnt, 10) >= 1) {
+            throw new AppError(
+              'Organization already has a root (CEO) position. All other positions must report to an existing position.',
+              400,
+              'ORG_ALREADY_HAS_ROOT'
+            );
+          }
+
           const orgRes = await client.query('SELECT slug FROM organizations WHERE id = $1', [orgId]);
           const orgSlug = orgRes.rows[0].slug.replace(/-/g, '_');
           const pathLabels = oldPath.split('.');
@@ -256,6 +278,35 @@ export class HierarchyService {
             reason || 'Position Hierarchy Reorganization'
           ]
         );
+
+        // Supplementary root-level audit entries for traceability
+        if (parentSpecified) {
+          if (resultingParentId === null && oldParentId !== null) {
+            // A non-root became root
+            await client.query(
+              `INSERT INTO audit_logs (organization_id, entity_type, entity_id, action, old_data, new_data, changed_by, reason)
+               VALUES ($1, 'position', $2, 'ROOT_POSITION_UPDATED', $3::jsonb, $4::jsonb, $5, $6)`,
+              [
+                orgId, positionId,
+                JSON.stringify({ parent_id: oldParentId, path: oldPath, title: targetTitle }),
+                JSON.stringify({ parent_id: null, path: newPath, title: targetTitle, is_root: true }),
+                operatorPersonId, reason || 'Position promoted to root'
+              ]
+            );
+          } else if (resultingParentId !== null && oldParentId === null) {
+            // Root was demoted (given a parent)
+            await client.query(
+              `INSERT INTO audit_logs (organization_id, entity_type, entity_id, action, old_data, new_data, changed_by, reason)
+               VALUES ($1, 'position', $2, 'ROOT_POSITION_DEMOTED', $3::jsonb, $4::jsonb, $5, $6)`,
+              [
+                orgId, positionId,
+                JSON.stringify({ parent_id: null, path: oldPath, title: targetTitle, is_root: true }),
+                JSON.stringify({ parent_id: resultingParentId, path: newPath, title: targetTitle }),
+                operatorPersonId, reason || 'Root position demoted'
+              ]
+            );
+          }
+        }
 
         if (assignedEmployee) {
           const currentEmployeeRes = await client.query(
@@ -397,16 +448,23 @@ export class HierarchyService {
           }
         }
 
-        // 5. Terminate old assignment
-        if (activeAssignRes.rows.length > 0) {
-          const assignmentId = activeAssignRes.rows[0].assignment_id;
-          await client.query(
-            'UPDATE position_assignments SET end_date = CURRENT_DATE, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
-            [assignmentId]
-          );
-        }
+        // 5. Terminate all previous active assignments for this person so old position becomes vacant
+        await client.query(
+          `UPDATE position_assignments 
+           SET end_date = CURRENT_DATE - 1, is_primary = false, updated_at = CURRENT_TIMESTAMP 
+           WHERE person_id = $1 AND (end_date IS NULL OR end_date >= CURRENT_DATE)`,
+          [employeeId]
+        );
 
-        // 6. Create new assignment
+        // Also terminate any existing active assignment on the target position
+        await client.query(
+          `UPDATE position_assignments 
+           SET end_date = CURRENT_DATE - 1, is_primary = false, updated_at = CURRENT_TIMESTAMP 
+           WHERE position_id = $1 AND is_primary = true AND (end_date IS NULL OR end_date >= CURRENT_DATE)`,
+          [targetPositionId]
+        );
+
+        // 6. Create new active assignment
         await client.query(
           `INSERT INTO position_assignments (person_id, position_id, is_primary, start_date)
            VALUES ($1, $2, true, CURRENT_DATE)`,

@@ -86,20 +86,20 @@ async function seed() {
     section('Positions (ltree hierarchy)');
 
     /*
-     * Hierarchy we're building:
+     * Hierarchy we're building (single root = CEO):
      *
-     *   acme_corp                    ← CEO
-     *   acme_corp.cto                ← CTO   (reports to CEO)
-     *   acme_corp.hr_director        ← HR Director (reports to CEO)
-     *   acme_corp.cto.senior_dev     ← Senior Developer (reports to CTO)
-     *   acme_corp.cto.junior_dev     ← Junior Developer (reports to CTO)
+     *   acme_corp                        ← CEO (root, parent_id IS NULL)
+     *   acme_corp.cto                    ← CTO        (reports to CEO)
+     *   acme_corp.hr_director            ← HR Director (reports to CEO)
+     *   acme_corp.cto.senior_dev         ← Senior Developer (reports to CTO)
+     *   acme_corp.cto.senior_dev.junior_dev ← Junior Developer (reports to Senior Dev)
      */
     const positionDefs = [
-      { title: 'CEO',               path: 'acme_corp',                      dept: null,                  parent_path: null },
-      { title: 'CTO',               path: 'acme_corp.cto',                  dept: 'Engineering',         parent_path: 'acme_corp' },
-      { title: 'HR Director',       path: 'acme_corp.hr_director',          dept: 'Human Resources',     parent_path: 'acme_corp' },
-      { title: 'Senior Developer',  path: 'acme_corp.hr_director.senior_dev', dept: 'Engineering',       parent_path: 'acme_corp.hr_director' },
-      { title: 'Junior Developer',  path: 'acme_corp.cto.junior_dev',       dept: 'Engineering',         parent_path: 'acme_corp.cto' },
+      { title: 'CEO',              path: 'acme_corp',                           dept: null,            parent_path: null },
+      { title: 'CTO',              path: 'acme_corp.cto',                       dept: 'Engineering',   parent_path: 'acme_corp' },
+      { title: 'HR Director',      path: 'acme_corp.hr_director',               dept: 'Human Resources', parent_path: 'acme_corp' },
+      { title: 'Senior Developer', path: 'acme_corp.cto.senior_dev',            dept: 'Engineering',   parent_path: 'acme_corp.cto' },
+      { title: 'Junior Developer', path: 'acme_corp.cto.senior_dev.junior_dev', dept: 'Engineering',   parent_path: 'acme_corp.cto.senior_dev' },
     ];
 
     const positions = {};
@@ -109,6 +109,20 @@ async function seed() {
 
       // Resolve parent_id from the path we already inserted
       const parentId = def.parent_path ? positions[def.parent_path]?.id : null;
+
+      // Guard against duplicate roots: if this is a root position check first
+      if (!def.parent_path) {
+        const existingRoot = await client.query(
+          'SELECT id, title, path FROM positions WHERE organization_id = $1 AND parent_id IS NULL AND is_active = true ORDER BY created_at ASC LIMIT 1',
+          [org.id]
+        );
+        if (existingRoot.rows.length > 0) {
+          // A root already exists — use it instead of inserting a duplicate
+          positions[def.path] = existingRoot.rows[0];
+          log(`ℹ️  Root already exists: ${existingRoot.rows[0].title.padEnd(20)} path: ${existingRoot.rows[0].path}`);
+          continue;
+        }
+      }
 
       const r = await client.query(`
         INSERT INTO positions (organization_id, department_id, parent_id, title, path, is_active)
@@ -125,6 +139,7 @@ async function seed() {
       positions[def.path] = existing;
       log(`✅ Position: ${existing.title.padEnd(20)} path: ${existing.path}`);
     }
+
 
     // ── 4. Persons (Admin & Employees) ───────────────────────────────────────
     section('Persons');
