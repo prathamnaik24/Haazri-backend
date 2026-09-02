@@ -304,7 +304,7 @@ export const up = (pgm) => {
     },
   });
 
-  pgm.addIndex('payroll', ['person_id', 'year', 'month']);
+  pgm.addIndex('payroll', ['person_id', 'year', 'month'], { ifNotExists: true });
 
   // ============================================================
   // 4. PAYSLIPS

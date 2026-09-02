@@ -341,6 +341,62 @@ async function seed() {
       }
       log(`✅ Leave Type: ${leaveType.name} (Policy: ${def.days} days)`);
     }
+    // ── 9.8 Compensation, Salary Components & Payroll ────────────────────────
+    section('Compensation & Payroll');
+
+    const ayesha = seededPeople.find(p => p.email === 'ayesha@acme-corp.com');
+    if (ayesha) {
+      // 1. Base salary structure
+      await client.query(`
+        INSERT INTO salary_structures (person_id, base_salary, allowances, is_active, effective_from)
+        VALUES ($1, 50000.00, 5000.00, true, current_date)
+        ON CONFLICT DO NOTHING
+      `, [ayesha.id]);
+
+      // 2. Salary components
+      const sampleComponents = [
+        { type: 'BASIC', calc: 'FIXED', base: null, val: 25000, amt: 25000 },
+        { type: 'HRA', calc: 'PERCENTAGE', base: 'BASIC', val: 25.00, amt: 12500 },
+        { type: 'STANDARD_ALLOWANCE', calc: 'FIXED', base: null, val: 3000, amt: 3000 },
+        { type: 'PERFORMANCE_BONUS', calc: 'FIXED', base: null, val: 5000, amt: 5000 },
+        { type: 'LTA', calc: 'FIXED', base: null, val: 5000, amt: 5000 },
+        { type: 'FIXED_ALLOWANCE', calc: 'FIXED', base: null, val: 2000, amt: 2000 },
+      ];
+
+      for (const comp of sampleComponents) {
+        const existingComp = await client.query(
+          'SELECT id FROM salary_components WHERE person_id = $1 AND component_type = $2',
+          [ayesha.id, comp.type]
+        );
+        if (existingComp.rows.length === 0) {
+          await client.query(`
+            INSERT INTO salary_components (person_id, component_type, calculation_type, percentage_base, configured_value, calculated_amount, is_active, effective_from)
+            VALUES ($1, $2, $3, $4, $5, $6, true, current_date)
+          `, [ayesha.id, comp.type, comp.calc, comp.base, comp.val, comp.amt]);
+        }
+      }
+
+      // 3. Current month payroll record for September 2026
+      const existingPayroll = await client.query(
+        'SELECT id FROM payroll WHERE person_id = $1 AND year = 2026 AND month = 9',
+        [ayesha.id]
+      );
+      if (existingPayroll.rows.length === 0) {
+        await client.query(`
+          INSERT INTO payroll (
+            person_id, year, month, total_earnings, total_deductions, net_salary, status,
+            basic_salary, hra, standard_allowance, performance_bonus, leave_travel_allowance, fixed_allowance, stock_equity,
+            tds, provident_fund, professional_tax, other_deductions, working_days, paid_days
+          ) VALUES (
+            $1, 2026, 9, 52500.00, 6200.00, 46300.00, 'Pending',
+            25000.00, 12500.00, 3000.00, 5000.00, 5000.00, 2000.00, 0.00,
+            3000.00, 3000.00, 200.00, 0.00, 22, 22
+          )
+        `, [ayesha.id]);
+      }
+      log(`✅ Compensation & Payroll seeded for Ayesha Khan`);
+    }
+
     // ── 10. Sample Audit Log ──────────────────────────────────────────────────
     section('Audit Log (sample row)');
 
