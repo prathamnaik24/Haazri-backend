@@ -39,13 +39,15 @@ export const createPosition = async (req, res, next) => {
   try {
     const position = await OrgStructureService.createPosition(
       req.user.organization_id,
-      req.body
+      req.body,
+      req.user.person_id || null
     );
     res.status(201).json({ status: 'success', data: position });
   } catch (error) {
     next(error);
   }
 };
+
 
 export const updatePosition = async (req, res, next) => {
   try {

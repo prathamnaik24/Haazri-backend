@@ -4,6 +4,30 @@ import { db } from '../db/index.js';
 import { AppError } from '../middlewares/errorHandler.js';
 
 export class OrgService {
+  async ensureWorkdayIdSupport(client) {
+    await client.query("CREATE SEQUENCE IF NOT EXISTS workday_id_seq START WITH 1 INCREMENT BY 1");
+    await client.query(`ALTER TABLE persons ADD COLUMN IF NOT EXISTS workday_id VARCHAR(50)`);
+    await client.query(`DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'persons_workday_id_unique'
+        ) THEN
+          ALTER TABLE persons ADD CONSTRAINT persons_workday_id_unique UNIQUE (workday_id);
+        END IF;
+      END $$;`);
+    await client.query(`UPDATE persons
+      SET workday_id = 'WD-' || LPAD(nextval('workday_id_seq')::text, 6, '0')
+      WHERE workday_id IS NULL;`);
+  }
+
+  async generateWorkdayId(client) {
+    await this.ensureWorkdayIdSupport(client);
+    const sequenceResult = await client.query("SELECT nextval('workday_id_seq') AS next_value");
+    const nextValue = Number(sequenceResult.rows[0].next_value);
+    return `WD-${String(nextValue).padStart(6, '0')}`;
+  }
+
   /**
    * Create an employee record and generate a registration invitation token.
    * Runs in a transaction to guarantee atomic persistence.
@@ -13,9 +37,11 @@ export class OrgService {
       first_name,
       last_name,
       email,
+      employee_id = null,
       phone_number = null,
       avatar_url = null,
       position_id = null,
+      workday_id: ignoredWorkdayId,
     } = data;
 
     if (!first_name || !last_name || !email) {
@@ -37,23 +63,38 @@ export class OrgService {
         throw new AppError(`Employee with email "${email}" already exists in this organization`, 409);
       }
 
+      if (employee_id) {
+        const employeeIdCheck = await client.query(
+          'SELECT id FROM persons WHERE organization_id = $1 AND employee_id = $2',
+          [tenantId, employee_id.trim()]
+        );
+
+        if (employeeIdCheck.rows.length > 0) {
+          throw new AppError(`Employee ID "${employee_id}" already exists in this organization`, 409);
+        }
+      }
+
       // 2. Generate a secure high-entropy placeholder password (persons.password_hash is NOT NULL)
       const placeholderPlain = crypto.randomBytes(32).toString('hex');
       const placeholderHash = await bcrypt.hash(placeholderPlain, 12);
 
-      // 3. Create the person record
+      // 3. Create the person record with a server-generated Workday ID
+      const workdayId = await this.generateWorkdayId(client);
+
       const personResult = await client.query(
-        `INSERT INTO persons (organization_id, first_name, last_name, email, password_hash, phone_number, avatar_url, is_active)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, true)
-         RETURNING id, first_name, last_name, email, phone_number, avatar_url, is_active, joined_at`,
+        `INSERT INTO persons (organization_id, first_name, last_name, email, employee_id, password_hash, phone_number, avatar_url, workday_id, is_active)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true)
+         RETURNING id, first_name, last_name, email, employee_id, phone_number, avatar_url, workday_id, is_active, joined_at`,
         [
           tenantId,
           first_name.trim(),
           last_name.trim(),
           email.toLowerCase().trim(),
+          employee_id ? employee_id.trim() : null,
           placeholderHash,
           phone_number ? phone_number.trim() : null,
           avatar_url ? avatar_url.trim() : null,
+          workdayId,
         ]
       );
       const employee = personResult.rows[0];
@@ -105,7 +146,7 @@ export class OrgService {
         [
           tenantId,
           employee.id,
-          JSON.stringify({ first_name, last_name, email, position_id }),
+          JSON.stringify({ first_name, last_name, email, employee_id: employee.employee_id, position_id, workday_id: employee.workday_id }),
           invitedBy,
         ]
       );
@@ -134,15 +175,22 @@ export class OrgService {
    * List all employees in the organization (paginated).
    */
   async listEmployees(tenantId, options = {}) {
-    const { limit = 20, offset = 0 } = options;
+    const { limit = 50, offset = 0 } = options;
 
     const result = await db.query(
-      `SELECT 
-         p.id, p.first_name, p.last_name, p.email, p.phone_number, p.avatar_url, p.is_active, p.joined_at,
-         pos.id AS position_id, pos.title AS position_title, pos.path AS position_path
+      `WITH primary_positions AS (
+         SELECT DISTINCT ON (pa.person_id)
+           pa.person_id, pos.id AS position_id, pos.title AS position_title, pos.path AS position_path
+         FROM position_assignments pa
+         JOIN positions pos ON pos.id = pa.position_id
+         WHERE pa.is_primary = true AND (pa.end_date IS NULL OR pa.end_date >= current_date)
+         ORDER BY pa.person_id, pa.created_at DESC
+       )
+       SELECT 
+         p.id, p.first_name, p.last_name, p.email, p.employee_id, p.workday_id, p.phone_number, p.avatar_url, p.is_active, p.joined_at,
+         pp.position_id, pp.position_title, pp.position_path
        FROM persons p
-       LEFT JOIN position_assignments pa ON pa.person_id = p.id AND pa.is_primary = true AND (pa.end_date IS NULL OR pa.end_date >= current_date)
-       LEFT JOIN positions pos ON pos.id = pa.position_id
+       LEFT JOIN primary_positions pp ON pp.person_id = p.id
        WHERE p.organization_id = $1
        ORDER BY p.last_name ASC, p.first_name ASC
        LIMIT $2 OFFSET $3`,
@@ -160,6 +208,8 @@ export class OrgService {
         first_name: row.first_name,
         last_name: row.last_name,
         email: row.email,
+        employee_id: row.employee_id,
+        workday_id: row.workday_id,
         phone_number: row.phone_number,
         avatar_url: row.avatar_url,
         is_active: row.is_active,
@@ -177,12 +227,59 @@ export class OrgService {
   }
 
   /**
+   * Delete an employee record (and associated position/role assignments).
+   */
+  async deleteEmployee(tenantId, employeeId, deletedBy) {
+    const client = await db.getClient();
+    try {
+      await client.query('BEGIN');
+
+      const empRes = await client.query(
+        'SELECT id, first_name, last_name, email FROM persons WHERE organization_id = $1 AND id = $2',
+        [tenantId, employeeId]
+      );
+
+      if (empRes.rows.length === 0) {
+        throw new AppError('Employee not found', 404);
+      }
+
+      const emp = empRes.rows[0];
+
+      // Delete position assignments & person roles
+      await client.query('DELETE FROM position_assignments WHERE person_id = $1', [employeeId]);
+      await client.query('DELETE FROM person_roles WHERE person_id = $1', [employeeId]);
+      await client.query('DELETE FROM org_invite_tokens WHERE organization_id = $1 AND email = $2', [tenantId, emp.email]);
+      await client.query('DELETE FROM financial_records WHERE person_id = $1', [employeeId]);
+      await client.query('DELETE FROM attendance_events WHERE person_id = $1', [employeeId]);
+      await client.query('DELETE FROM leave_requests WHERE person_id = $1', [employeeId]);
+
+      // Delete person
+      await client.query('DELETE FROM persons WHERE id = $1 AND organization_id = $2', [employeeId, tenantId]);
+
+      // Audit log
+      await client.query(
+        `INSERT INTO audit_logs (organization_id, entity_type, entity_id, action, new_data, changed_by, reason)
+         VALUES ($1, 'person', $2, 'DELETE', $3::jsonb, $4, 'Employee removed by organization admin')`,
+        [tenantId, employeeId, JSON.stringify({ email: emp.email, name: `${emp.first_name} ${emp.last_name}` }), deletedBy]
+      );
+
+      await client.query('COMMIT');
+      return { message: `Employee ${emp.first_name} ${emp.last_name} deleted successfully` };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
    * Get an employee by ID.
    */
   async getEmployeeById(tenantId, employeeId) {
     const result = await db.query(
       `SELECT 
-         p.id, p.first_name, p.last_name, p.email, p.phone_number, p.avatar_url, p.is_active, p.joined_at,
+         p.id, p.first_name, p.last_name, p.email, p.employee_id, p.workday_id, p.phone_number, p.avatar_url, p.is_active, p.joined_at,
          pos.id AS position_id, pos.title AS position_title, pos.path AS position_path
        FROM persons p
        LEFT JOIN position_assignments pa ON pa.person_id = p.id AND pa.is_primary = true AND (pa.end_date IS NULL OR pa.end_date >= current_date)
@@ -210,6 +307,8 @@ export class OrgService {
       first_name: row.first_name,
       last_name: row.last_name,
       email: row.email,
+      employee_id: row.employee_id,
+      workday_id: row.workday_id,
       phone_number: row.phone_number,
       avatar_url: row.avatar_url,
       is_active: row.is_active,
@@ -229,6 +328,10 @@ export class OrgService {
    * Update an employee's details, position assignment, role assignment, or activation status
    */
   async updateEmployee(tenantId, employeeId, updates, changedBy) {
+    if (Object.prototype.hasOwnProperty.call(updates, 'workday_id')) {
+      throw new AppError('workday_id is system-managed and cannot be changed through the employee update API', 400);
+    }
+
     const { first_name, last_name, employee_id, is_active, position_id, role_id } = updates;
 
     const fields = [];
@@ -263,7 +366,7 @@ export class OrgService {
           `UPDATE persons 
            SET ${fields.join(', ')}
            WHERE organization_id = $1 AND id = $2
-           RETURNING id, first_name, last_name, employee_id, is_active`,
+           RETURNING id, first_name, last_name, employee_id, workday_id, is_active`,
           values
         );
 
@@ -273,7 +376,7 @@ export class OrgService {
         person = result.rows[0];
       } else {
         const check = await client.query(
-          `SELECT id, first_name, last_name, employee_id, is_active FROM persons WHERE organization_id = $1 AND id = $2`,
+          `SELECT id, first_name, last_name, employee_id, workday_id, is_active FROM persons WHERE organization_id = $1 AND id = $2`,
           [tenantId, employeeId]
         );
         if (check.rows.length === 0) {

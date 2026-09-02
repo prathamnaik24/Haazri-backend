@@ -90,16 +90,18 @@ export const loginOrg = async (req, res, next) => {
  */
 export const loginEmployee = async (req, res, next) => {
   try {
-    const { org_slug, email, password } = req.body;
+    const { org_slug, email, employee_id, password } = req.body;
+    const identifier = employee_id || email;
 
-    if (!org_slug || !email || !password) {
-      throw new AppError('org_slug, email and password are required', 400);
+    if (!org_slug || !identifier || !password) {
+      throw new AppError('org_slug, employee_id (or email), and password are required', 400);
     }
 
     const service = AuthFactory.create('employee');
     const result = await service.login({
       org_slug: org_slug.toLowerCase(),
-      email: email.toLowerCase(),
+      email: email ? email.toLowerCase() : null,
+      employee_id: employee_id ? employee_id.trim() : null,
       password,
     });
 
@@ -122,7 +124,7 @@ export const loginEmployee = async (req, res, next) => {
 export const getMe = async (req, res, next) => {
   try {
     const personRes = await db.query(
-      `SELECT p.id, p.first_name, p.last_name, p.email, p.employee_id, p.phone_number, p.avatar_url, p.organization_id, o.name as org_name, o.slug as org_slug
+      `SELECT p.id, p.first_name, p.last_name, p.email, p.employee_id, p.workday_id, p.phone_number, p.avatar_url, p.organization_id, o.name as org_name, o.slug as org_slug
        FROM persons p
        JOIN organizations o ON p.organization_id = o.id
        WHERE p.id = $1`,
@@ -179,7 +181,7 @@ export const updateProfile = async (req, res, next) => {
       `UPDATE persons 
        SET ${fields.join(', ')}
        WHERE id = $1
-       RETURNING id, first_name, last_name, email, employee_id, phone_number`,
+       RETURNING id, first_name, last_name, email, employee_id, workday_id, phone_number`,
       values
     );
 

@@ -11,7 +11,18 @@ const app = express();
 // Standard middlewares
 app.use(helmet());
 app.use(cors({
-  origin: env.CORS_ORIGIN,
+  origin: (origin, callback) => {
+    // Allow non-browser / local requests
+    if (!origin) return callback(null, true);
+    // Allow any localhost / 127.0.0.1 origin in development
+    if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+      return callback(null, true);
+    }
+    if (env.CORS_ORIGIN && (env.CORS_ORIGIN === '*' || origin === env.CORS_ORIGIN)) {
+      return callback(null, true);
+    }
+    callback(new Error('Not allowed by CORS'));
+  },
   credentials: true
 }));
 app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev'));

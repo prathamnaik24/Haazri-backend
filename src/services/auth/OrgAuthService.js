@@ -63,12 +63,17 @@ export class OrgAuthService {
       // 3. Hash the admin password
       const password_hash = await bcrypt.hash(admin_password, 12);
 
-      // 4. Create the admin person
+      // 4. Create the admin person with a server-generated Workday ID
+      await client.query("CREATE SEQUENCE IF NOT EXISTS workday_id_seq START WITH 1 INCREMENT BY 1");
+      await client.query(`ALTER TABLE persons ADD COLUMN IF NOT EXISTS workday_id VARCHAR(50)`);
+      const sequenceResult = await client.query("SELECT nextval('workday_id_seq') AS next_value");
+      const workdayId = `WD-${String(Number(sequenceResult.rows[0].next_value)).padStart(6, '0')}`;
+
       const personResult = await client.query(
-        `INSERT INTO persons (organization_id, first_name, last_name, email, password_hash, is_active)
-         VALUES ($1, $2, $3, $4, $5, true)
-         RETURNING id, first_name, last_name, email`,
-        [organization.id, admin_first_name, admin_last_name, admin_email, password_hash]
+        `INSERT INTO persons (organization_id, first_name, last_name, email, password_hash, workday_id, is_active)
+         VALUES ($1, $2, $3, $4, $5, $6, true)
+         RETURNING id, first_name, last_name, email, workday_id`,
+        [organization.id, admin_first_name, admin_last_name, admin_email, password_hash, workdayId]
       );
       const person = personResult.rows[0];
 
@@ -88,6 +93,19 @@ export class OrgAuthService {
         [person.id, role.id]
       );
 
+      // 6.5. Assign default active subscription plan (Growth) to the organization
+      const planRes = await client.query(
+        `SELECT id FROM subscription_plans WHERE slug = 'growth' LIMIT 1`
+      );
+      if (planRes.rows.length > 0) {
+        await client.query(
+          `INSERT INTO organization_subscriptions (organization_id, plan_id, status, current_period_start, current_period_end)
+           VALUES ($1, $2, 'active', NOW(), NOW() + INTERVAL '1 year')
+           ON CONFLICT (organization_id) DO NOTHING`,
+          [organization.id, planRes.rows[0].id]
+        );
+      }
+
       // 7. Log the creation in audit_logs
       await client.query(
         `INSERT INTO audit_logs (organization_id, entity_type, entity_id, action, new_data, changed_by, reason)
@@ -98,7 +116,7 @@ export class OrgAuthService {
         [
           organization.id,
           organization.id,
-          JSON.stringify({ name: org_name, slug: org_slug, type: org_type }),
+          JSON.stringify({ name: org_name, slug: org_slug, type: org_type, workday_id: person.workday_id }),
           person.id,
         ]
       );

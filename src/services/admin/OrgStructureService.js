@@ -274,6 +274,31 @@ export class OrgStructureService {
     return res.rows;
   }
 
+  /**
+   * Validate that no active root position (parent_id IS NULL) already exists for
+   * this organization. Call this BEFORE inserting a new root position.
+   *
+   * Throws AppError 400 with code ORG_ALREADY_HAS_ROOT if a root exists.
+   *
+   * @param {string} orgId
+   * @param {import('pg').PoolClient|null} [client] - Optional pool client for transactions
+   */
+  static async ensureSingleRootPerOrg(orgId, client = null) {
+    const queryFn = client ? client.query.bind(client) : db.query.bind(db);
+    const res = await queryFn(
+      `SELECT COUNT(*) AS cnt FROM positions
+       WHERE organization_id = $1 AND parent_id IS NULL AND is_active = true`,
+      [orgId]
+    );
+    if (parseInt(res.rows[0].cnt, 10) >= 1) {
+      throw new AppError(
+        'Organization already has a root (CEO) position. All other positions must report to an existing position.',
+        400,
+        'ORG_ALREADY_HAS_ROOT'
+      );
+    }
+  }
+
   static async getPositionsTree(orgId) {
     const res = await db.query(`
       SELECT 
@@ -320,7 +345,10 @@ export class OrgStructureService {
           throw new AppError('Cannot replace hierarchy because active employees are already assigned to positions. Please reassign them first.', 409);
         }
         await client.query('DELETE FROM positions WHERE organization_id = $1', [orgId]);
+      } else {
+        await OrgStructureService.ensureSingleRootPerOrg(orgId, client);
       }
+
 
       const insertNode = async (node, parentId, parentPath) => {
         const slug = node.title.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
@@ -362,9 +390,15 @@ export class OrgStructureService {
     }
   }
 
-  static async createPosition(orgId, { title, parent_id }) {
+  static async createPosition(orgId, { title, parent_id }, operatorPersonId = null) {
     if (!title || title.trim() === '') {
       throw new AppError('Position title is required', 400);
+    }
+
+    // If creating a root position (no parent), enforce single-root constraint
+    const isRoot = !parent_id;
+    if (isRoot) {
+      await OrgStructureService.ensureSingleRootPerOrg(orgId);
     }
 
     const slug = title.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
@@ -401,8 +435,34 @@ export class OrgStructureService {
       [orgId, title.trim(), parent_id || null, path]
     );
 
-    return res.rows[0];
+    const position = res.rows[0];
+
+    // Audit: log root position creation
+    if (isRoot) {
+      try {
+        await db.query(
+          `INSERT INTO audit_logs
+             (organization_id, entity_type, entity_id, action, old_data, new_data, changed_by, reason)
+           VALUES ($1, 'position', $2, 'ROOT_POSITION_CREATED',
+                   NULL::jsonb,
+                   $3::jsonb,
+                   $4,
+                   'Root (CEO) position created')`,
+          [
+            orgId,
+            position.id,
+            JSON.stringify({ title: position.title, path: position.path, parent_id: null }),
+            operatorPersonId || null,
+          ]
+        );
+      } catch (_) {
+        // Non-fatal: audit failure must not block the creation
+      }
+    }
+
+    return position;
   }
+
 
   static async updatePosition(orgId, positionId, { title }) {
     if (!title || title.trim() === '') {
