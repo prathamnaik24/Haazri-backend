@@ -1,5 +1,6 @@
 import { db } from '../db/index.js';
 import { AppError } from '../middlewares/errorHandler.js';
+import { NotificationService } from './notification.service.js';
 
 const VALID_RECORD_TYPES = ['SALARY', 'BONUS', 'DEDUCTION', 'PAYSLIP', 'OTHER'];
 
@@ -129,6 +130,47 @@ export class FinanceService {
        VALUES ($1, 'financial_record', $2, 'CREATE', $3::jsonb, $4, 'Financial record created')`,
       [tenantId, result.rows[0].id, JSON.stringify(result.rows[0]), createdBy]
     );
+
+    // In-App Notification (strictly sanitized — no amounts or banking details)
+    const upperType = record_type.toUpperCase();
+    let notifType = null;
+    let notifTitle = '';
+    let notifMsg = '';
+
+    if (upperType === 'SALARY') {
+      notifType = 'SALARY_CREDITED';
+      notifTitle = 'Salary Statement Published';
+      notifMsg = period_month && period_year
+        ? `Your salary statement for ${period_month}/${period_year} has been published.`
+        : 'A new salary statement record is available in your profile.';
+    } else if (upperType === 'BONUS') {
+      notifType = 'BONUS_CREDITED';
+      notifTitle = 'Bonus Credited';
+      notifMsg = 'A bonus credit record has been added to your profile.';
+    } else if (upperType === 'PAYSLIP') {
+      notifType = 'PAYSLIP_AVAILABLE';
+      notifTitle = 'Payslip Available';
+      notifMsg = period_month && period_year
+        ? `Your payslip document for ${period_month}/${period_year} is available to view.`
+        : 'A new payslip record is available to view.';
+    }
+
+    if (notifType) {
+      await NotificationService.createNotification(db, {
+        tenantId,
+        personId: person_id,
+        type: notifType,
+        title: notifTitle,
+        message: notifMsg,
+        entityType: 'financial_record',
+        entityId: result.rows[0].id,
+        metadata: {
+          record_type: upperType,
+          period_month: period_month || null,
+          period_year: period_year || null,
+        },
+      });
+    }
 
     return result.rows[0];
   }

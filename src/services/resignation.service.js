@@ -1,5 +1,6 @@
 import { db } from '../db/index.js';
 import { AppError } from '../middlewares/errorHandler.js';
+import { NotificationService } from './notification.service.js';
 
 export const RESIGNATION_STATUSES = {
   PENDING_MANAGER_REVIEW: 'PENDING_MANAGER_REVIEW',
@@ -118,7 +119,7 @@ export class ResignationService {
       );
       const resignation = insertRes.rows[0];
 
-      // 4. Log audit event (actor derived strictly from authenticated personId)
+      // 5. Audit log
       await client.query(
         `INSERT INTO audit_logs (organization_id, entity_type, entity_id, action, new_data, changed_by, reason)
          VALUES ($1, 'resignation', $2, 'SUBMIT', $3::jsonb, $4, $5)`,
@@ -130,6 +131,21 @@ export class ResignationService {
           'Resignation submitted by employee',
         ]
       );
+
+      // Notify employee
+      await NotificationService.createNotification(client, {
+        tenantId,
+        personId,
+        type: 'RESIGNATION_UPDATE',
+        title: 'Resignation Request Submitted',
+        message: 'Your resignation request has been submitted for management review.',
+        entityType: 'resignation',
+        entityId: resignation.id,
+        metadata: {
+          resignation_id: resignation.id,
+          status: resignation.status,
+        },
+      });
 
       await client.query('COMMIT');
       return resignation;

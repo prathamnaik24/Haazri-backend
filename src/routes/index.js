@@ -15,6 +15,7 @@ import orgStructureRouter from './orgStructure.routes.js';
 import reportRouter from './report.routes.js';
 import auditRouter from './audit.routes.js';
 import resignationRouter from './resignation.routes.js';
+import notificationRouter from './notification.routes.js';
 
 const router = Router();
 
@@ -28,6 +29,7 @@ router.use('/finance', financeRouter);
 router.use('/subscriptions', subscriptionsRouter);
 router.use('/compensation', compensationRouter);
 router.use('/payroll', payrollRouter);
+router.use('/notifications', notificationRouter);
 
 router.use('/admin/roles', roleRouter);
 router.use('/admin/org-structure', orgStructureRouter);

@@ -1,5 +1,6 @@
 import { db } from '../db/index.js';
 import { AppError } from '../middlewares/errorHandler.js';
+import { NotificationService } from './notification.service.js';
 
 export class CompensationPayrollService {
   /**
@@ -419,6 +420,21 @@ export class CompensationPayrollService {
       [tenantId, res.rows[0].id, JSON.stringify(res.rows[0]), proposedBy]
     );
 
+    // Notify employee of proposed compensation revision
+    await NotificationService.createNotification(db, {
+      tenantId,
+      personId: person_id,
+      type: 'INCREMENT_PROPOSED',
+      title: 'Salary Revision Proposed',
+      message: 'A salary revision proposal has been submitted for review.',
+      entityType: 'salary_increment',
+      entityId: res.rows[0].id,
+      metadata: {
+        increment_id: res.rows[0].id,
+        effective_from: effective_from || null,
+      },
+    });
+
     return res.rows[0];
   }
 
@@ -485,6 +501,24 @@ export class CompensationPayrollService {
         `Salary increment ${targetStatus.toLowerCase()}`,
       ]
     );
+
+    // Notify employee of revision outcome
+    const isApproved = targetStatus === 'APPROVED';
+    await NotificationService.createNotification(db, {
+      tenantId,
+      personId: increment.person_id,
+      type: isApproved ? 'INCREMENT_APPROVED' : 'INCREMENT_REJECTED',
+      title: isApproved ? 'Salary Revision Approved' : 'Salary Revision Update',
+      message: isApproved
+        ? 'Your salary revision proposal has been approved and activated.'
+        : `Your salary revision proposal was reviewed (${targetStatus.toLowerCase()}).`,
+      entityType: 'salary_increment',
+      entityId: incrementId,
+      metadata: {
+        increment_id: incrementId,
+        status: targetStatus,
+      },
+    });
 
     return res.rows[0];
   }
@@ -670,7 +704,7 @@ export class CompensationPayrollService {
     }
 
     const payrollCheck = await db.query(
-      `SELECT pr.id FROM payroll pr
+      `SELECT pr.id, pr.person_id, pr.month, pr.year FROM payroll pr
        JOIN persons p ON p.id = pr.person_id
        WHERE pr.id = $1 AND p.organization_id = $2`,
       [payrollId, tenantId]
@@ -689,6 +723,25 @@ export class CompensationPayrollService {
        RETURNING *`,
       [status, payment_date || null, payment_reference || null, payrollId]
     );
+
+    // If marked Paid, notify employee
+    if (status === 'Paid') {
+      const prData = payrollCheck.rows[0];
+      await NotificationService.createNotification(db, {
+        tenantId,
+        personId: prData.person_id,
+        type: 'SALARY_CREDITED',
+        title: 'Salary Payout Processed',
+        message: `Your payroll payout for ${prData.month}/${prData.year} has been processed.`,
+        entityType: 'payroll',
+        entityId: payrollId,
+        metadata: {
+          payroll_id: payrollId,
+          month: prData.month,
+          year: prData.year,
+        },
+      });
+    }
 
     return res.rows[0];
   }
@@ -740,6 +793,22 @@ export class CompensationPayrollService {
        RETURNING *`,
       [person_id, payroll_id || null, month, year, file_name, file_url, file_size || null, uploadedBy]
     );
+
+    // Notify employee of payslip availability
+    await NotificationService.createNotification(db, {
+      tenantId,
+      personId: person_id,
+      type: 'PAYSLIP_AVAILABLE',
+      title: 'Payslip Document Available',
+      message: `Your payslip document for ${month}/${year} is available to view and download.`,
+      entityType: 'payslip',
+      entityId: res.rows[0].id,
+      metadata: {
+        payslip_id: res.rows[0].id,
+        month,
+        year,
+      },
+    });
 
     return res.rows[0];
   }

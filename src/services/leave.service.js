@@ -1,5 +1,6 @@
 import { db } from '../db/index.js';
 import { AppError } from '../middlewares/errorHandler.js';
+import { NotificationService } from './notification.service.js';
 
 export class LeaveService {
   /**
@@ -100,6 +101,24 @@ export class LeaveService {
         ]
       );
 
+      // 7. Send in-app notification to applicant
+      await NotificationService.createNotification(client, {
+        tenantId,
+        personId,
+        type: 'LEAVE_SUBMITTED',
+        title: 'Leave Application Submitted',
+        message: `Your leave request for ${durationDays} day(s) (${start_date} to ${end_date}) has been submitted.`,
+        entityType: 'leave_request',
+        entityId: leaveRow.id,
+        metadata: {
+          leave_id: leaveRow.id,
+          start_date,
+          end_date,
+          duration_days: durationDays,
+          leave_type_name: ltRes.rows[0].name,
+        },
+      });
+
       await client.query('COMMIT');
 
       return {
@@ -186,6 +205,22 @@ export class LeaveService {
          RETURNING *`,
         [personId, leaveId]
       );
+
+      // Notify applicant of cancellation
+      await NotificationService.createNotification(client, {
+        tenantId: leave.organization_id || (await client.query('SELECT organization_id FROM persons WHERE id = $1', [personId])).rows[0]?.organization_id,
+        personId,
+        type: 'LEAVE_CANCELLED',
+        title: 'Leave Application Cancelled',
+        message: `Your leave request from ${leave.start_date} to ${leave.end_date} has been cancelled.`,
+        entityType: 'leave_request',
+        entityId: leaveId,
+        metadata: {
+          leave_id: leaveId,
+          start_date: leave.start_date,
+          end_date: leave.end_date,
+        },
+      });
 
       await client.query('COMMIT');
       return result.rows[0];
@@ -317,6 +352,27 @@ export class LeaveService {
           `Leave request ${action.toLowerCase()} by manager`,
         ]
       );
+
+      // Notify employee of review outcome
+      const isApproved = action === 'Approved';
+      await NotificationService.createNotification(client, {
+        tenantId,
+        personId: leaveReq.person_id,
+        type: isApproved ? 'LEAVE_APPROVED' : 'LEAVE_REJECTED',
+        title: isApproved ? 'Leave Request Approved' : 'Leave Request Rejected',
+        message: isApproved
+          ? `Your leave request for ${durationDays} day(s) (${leaveReq.start_date} to ${leaveReq.end_date}) was approved.`
+          : `Your leave request for ${durationDays} day(s) (${leaveReq.start_date} to ${leaveReq.end_date}) was rejected.${remark ? ` Reason: ${remark}` : ''}`,
+        entityType: 'leave_request',
+        entityId: requestId,
+        metadata: {
+          leave_id: requestId,
+          status: action,
+          start_date: leaveReq.start_date,
+          end_date: leaveReq.end_date,
+          duration_days: durationDays,
+        },
+      });
 
       await client.query('COMMIT');
       return result.rows[0];
