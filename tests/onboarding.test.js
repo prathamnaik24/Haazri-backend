@@ -58,7 +58,7 @@ describe('Employee Onboarding & SHA-256 Activation Flow', () => {
     // Check onboarding object & fallback link
     const onboarding = res.body.data.invite;
     expect(onboarding.invite_link).toBeDefined();
-    expect(onboarding.invite_link).toContain(`/accept-invite?token=${rawActivationToken}`);
+    expect(onboarding.invite_link).toContain(`/set-password?token=${rawActivationToken}`);
     activationLink = onboarding.invite_link;
 
     // Verify in database: token_hash is SHA-256 (64 hex characters), NEVER the raw token

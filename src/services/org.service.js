@@ -173,7 +173,7 @@ export class OrgService {
       await client.query('COMMIT');
 
       // 7. Build activation link — outside the transaction, no DB call needed
-      const activationLink = `${FRONTEND_URL}/accept-invite?token=${rawToken}`;
+      const activationLink = `${FRONTEND_URL}/set-password?token=${encodeURIComponent(rawToken)}`;
 
       // 8. Attempt email — only fires when RESEND_API_KEY + RESEND_FROM_EMAIL are set.
       //    On failure: logs server-side, returns fallback link to admin.
@@ -534,7 +534,7 @@ export class OrgService {
 
       await client.query('COMMIT');
 
-      const activationLink = `${FRONTEND_URL}/accept-invite?token=${rawToken}`;
+      const activationLink = `${FRONTEND_URL}/set-password?token=${encodeURIComponent(rawToken)}`;
 
       // Attempt email — gracefully falls back to link if email is disabled or fails
       const emailResult = await sendActivationEmail({
