@@ -26,7 +26,9 @@ router.post('/org/login', loginOrg);
  * POST /api/auth/invite/accept   — Employee sets password via invite token
  */
 router.post('/employee/login', loginEmployee);
-router.post('/invite/accept', acceptInvite);
+router.post('/invite/accept', acceptInvite);       // legacy alias — kept for backwards compat
+router.post('/activate-account', acceptInvite);    // new clean URL used by /accept-invite page
+
 
 /**
  * User Profile & Account Settings (Protected)

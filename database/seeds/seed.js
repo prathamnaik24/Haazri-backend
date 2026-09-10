@@ -160,9 +160,9 @@ async function seed() {
 
     for (const def of peopleDefs) {
       const res = await client.query(`
-        INSERT INTO persons (organization_id, first_name, last_name, email, employee_id, password_hash, workday_id, is_active)
-        VALUES ($1, $2, $3, $4, $5, $6, 'WD-' || LPAD(nextval('workday_id_seq')::text, 6, '0'), true)
-        ON CONFLICT (organization_id, email) DO UPDATE SET employee_id = EXCLUDED.employee_id, password_hash = EXCLUDED.password_hash
+        INSERT INTO persons (organization_id, first_name, last_name, email, employee_id, password_hash, workday_id, is_active, activation_status)
+        VALUES ($1, $2, $3, $4, $5, $6, 'WD-' || LPAD(nextval('workday_id_seq')::text, 6, '0'), true, 'ACTIVE')
+        ON CONFLICT (organization_id, email) DO UPDATE SET employee_id = EXCLUDED.employee_id, password_hash = EXCLUDED.password_hash, activation_status = 'ACTIVE'
         RETURNING id, first_name, last_name, email, employee_id, workday_id
       `, [org.id, def.first_name, def.last_name, def.email, def.employee_id, def.password_hash]);
 

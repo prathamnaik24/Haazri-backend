@@ -78,8 +78,8 @@ describe('Deliverable 2 Integration Tests — Attendance Loop', () => {
 
     // 3. Create Manager (CTO) Person
     const managerRes = await db.query(
-      `INSERT INTO persons (organization_id, first_name, last_name, email, password_hash, is_active)
-       VALUES ($1, 'Mark', 'Manager', 'cto-${RUN_ID}@attcorp.com', $2, true) RETURNING id`,
+      `INSERT INTO persons (organization_id, first_name, last_name, email, password_hash, is_active, activation_status)
+       VALUES ($1, 'Mark', 'Manager', 'cto-${RUN_ID}@attcorp.com', $2, true, 'ACTIVE') RETURNING id`,
       [orgId, passwordHash]
     );
     managerId = managerRes.rows[0].id;
@@ -92,8 +92,8 @@ describe('Deliverable 2 Integration Tests — Attendance Loop', () => {
 
     // 4. Create Employee (Dev) Person
     const employeeRes = await db.query(
-      `INSERT INTO persons (organization_id, first_name, last_name, email, password_hash, is_active)
-       VALUES ($1, 'Emily', 'Employee', 'dev-${RUN_ID}@attcorp.com', $2, true) RETURNING id`,
+      `INSERT INTO persons (organization_id, first_name, last_name, email, password_hash, is_active, activation_status)
+       VALUES ($1, 'Emily', 'Employee', 'dev-${RUN_ID}@attcorp.com', $2, true, 'ACTIVE') RETURNING id`,
       [orgId, passwordHash]
     );
     employeeId = employeeRes.rows[0].id;

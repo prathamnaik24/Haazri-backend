@@ -2,6 +2,17 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { db } from '../db/index.js';
 import { AppError } from '../middlewares/errorHandler.js';
+import { sendActivationEmail } from './email.service.js';
+
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+
+/**
+ * Generate a SHA-256 hex digest of a raw high-entropy token.
+ * Only used for invite/activation tokens — passwords still use bcrypt.
+ */
+function sha256(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
 
 export class OrgService {
   async ensureWorkdayIdSupport(client) {
@@ -82,9 +93,9 @@ export class OrgService {
       const workdayId = await this.generateWorkdayId(client);
 
       const personResult = await client.query(
-        `INSERT INTO persons (organization_id, first_name, last_name, email, employee_id, password_hash, phone_number, avatar_url, workday_id, is_active)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true)
-         RETURNING id, first_name, last_name, email, employee_id, phone_number, avatar_url, workday_id, is_active, joined_at`,
+        `INSERT INTO persons (organization_id, first_name, last_name, email, employee_id, password_hash, phone_number, avatar_url, workday_id, is_active, activation_status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, 'PENDING_ACTIVATION')
+         RETURNING id, first_name, last_name, email, employee_id, phone_number, avatar_url, workday_id, is_active, activation_status, joined_at`,
         [
           tenantId,
           first_name.trim(),
@@ -127,12 +138,20 @@ export class OrgService {
         };
       }
 
-      // 5. Generate secure registration invitation token
+      // 5. Generate activation token — SHA-256 of high-entropy random bytes.
+      //    bcrypt is kept for employee *passwords*; SHA-256 is used only for
+      //    single-use, high-entropy invite tokens where O(1) indexed lookup matters.
       const rawToken = crypto.randomBytes(32).toString('hex');
-      const tokenHash = await bcrypt.hash(rawToken, 10);
-      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours expiry
+      const tokenHash = sha256(rawToken);
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
 
-      // Save token info
+      // Invalidate any previous unused tokens for this email (safety net)
+      await client.query(
+        `UPDATE org_invite_tokens SET used_at = NOW()
+         WHERE organization_id = $1 AND email = $2 AND used_at IS NULL`,
+        [tenantId, employee.email]
+      );
+
       await client.query(
         `INSERT INTO org_invite_tokens (organization_id, email, token_hash, invited_by, expires_at)
          VALUES ($1, $2, $3, $4, $5)`,
@@ -142,7 +161,7 @@ export class OrgService {
       // 6. Log in audit trail
       await client.query(
         `INSERT INTO audit_logs (organization_id, entity_type, entity_id, action, new_data, changed_by, reason)
-         VALUES ($1, 'person', $2, 'CREATE', $3::jsonb, $4, 'Employee registration invitation generated')`,
+         VALUES ($1, 'person', $2, 'CREATE', $3::jsonb, $4, 'Employee created, onboarding activation link generated')`,
         [
           tenantId,
           employee.id,
@@ -153,12 +172,29 @@ export class OrgService {
 
       await client.query('COMMIT');
 
-      // We return the raw plain token for test/verification flows
+      // 7. Build activation link — outside the transaction, no DB call needed
+      const activationLink = `${FRONTEND_URL}/accept-invite?token=${rawToken}`;
+
+      // 8. Attempt email — only fires when RESEND_API_KEY + RESEND_FROM_EMAIL are set.
+      //    On failure: logs server-side, returns fallback link to admin.
+      const emailResult = await sendActivationEmail({
+        to: employee.email,
+        name: `${employee.first_name} ${employee.last_name}`,
+        activationLink,
+      });
+
       return {
         employee: {
           ...employee,
           primary_position: primaryPosition,
         },
+        onboarding: {
+          activationLink,
+          emailSent: emailResult.sent,
+          emailDisabledReason: emailResult.sent ? undefined : emailResult.reason,
+          expiresAt,
+        },
+        // Legacy field kept for test backwards-compatibility
         invite_token: rawToken,
         expires_at: expiresAt,
       };
@@ -449,7 +485,8 @@ export class OrgService {
   }
 
   /**
-   * Resend an invite token for an employee
+   * Resend an activation invitation for a PENDING_ACTIVATION employee.
+   * Invalidates all previous unused tokens before issuing a new one.
    */
   async resendInvite(tenantId, employeeId, invitedBy) {
     const client = await db.getClient();
@@ -457,7 +494,8 @@ export class OrgService {
       await client.query('BEGIN');
 
       const empResult = await client.query(
-        'SELECT id, first_name, last_name, email FROM persons WHERE organization_id = $1 AND id = $2',
+        `SELECT id, first_name, last_name, email, activation_status
+         FROM persons WHERE organization_id = $1 AND id = $2`,
         [tenantId, employeeId]
       );
 
@@ -466,12 +504,19 @@ export class OrgService {
       }
       const employee = empResult.rows[0];
 
+      if (employee.activation_status === 'ACTIVE') {
+        throw new AppError('This employee has already activated their account and set a password.', 400);
+      }
+
+      // SHA-256 token — same pattern as createEmployee
       const rawToken = crypto.randomBytes(32).toString('hex');
-      const tokenHash = await bcrypt.hash(rawToken, 10);
+      const tokenHash = sha256(rawToken);
       const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
+      // Invalidate ALL previous unused tokens (mark consumed, not merely expired)
       await client.query(
-        `UPDATE org_invite_tokens SET expires_at = current_timestamp WHERE organization_id = $1 AND email = $2 AND used_at IS NULL`,
+        `UPDATE org_invite_tokens SET used_at = NOW()
+         WHERE organization_id = $1 AND email = $2 AND used_at IS NULL`,
         [tenantId, employee.email]
       );
 
@@ -483,12 +528,31 @@ export class OrgService {
 
       await client.query(
         `INSERT INTO audit_logs (organization_id, entity_type, entity_id, action, new_data, changed_by, reason)
-         VALUES ($1, 'person', $2, 'UPDATE', $3::jsonb, $4, 'Employee registration invitation resent')`,
+         VALUES ($1, 'person', $2, 'UPDATE', $3::jsonb, $4, 'Employee activation invitation resent — previous links invalidated')`,
         [tenantId, employee.id, JSON.stringify({ email: employee.email }), invitedBy]
       );
 
       await client.query('COMMIT');
-      return { invite_token: rawToken };
+
+      const activationLink = `${FRONTEND_URL}/accept-invite?token=${rawToken}`;
+
+      // Attempt email — gracefully falls back to link if email is disabled or fails
+      const emailResult = await sendActivationEmail({
+        to: employee.email,
+        name: `${employee.first_name} ${employee.last_name}`,
+        activationLink,
+      });
+
+      return {
+        onboarding: {
+          activationLink,
+          emailSent: emailResult.sent,
+          emailDisabledReason: emailResult.sent ? undefined : emailResult.reason,
+          expiresAt,
+        },
+        // Legacy field kept for backwards compatibility
+        invite_token: rawToken,
+      };
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -497,3 +561,4 @@ export class OrgService {
     }
   }
 }
+
