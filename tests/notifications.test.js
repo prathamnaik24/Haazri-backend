@@ -90,8 +90,8 @@ describe('In-App Notification Center Integration Tests', () => {
 
     // Create Manager person & assignment
     const mgrRes = await db.query(
-      `INSERT INTO persons (organization_id, first_name, last_name, email, password_hash, is_active, employment_status)
-       VALUES ($1, 'Lead', 'Manager', $2, $3, true, 'ACTIVE') RETURNING id`,
+      `INSERT INTO persons (organization_id, first_name, last_name, email, password_hash, is_active, employment_status, activation_status)
+       VALUES ($1, 'Lead', 'Manager', $2, $3, true, 'ACTIVE', 'ACTIVE') RETURNING id`,
       [orgId, `mgr-${RUN_ID}@notifcorp.com`, passwordHash]
     );
     managerId = mgrRes.rows[0].id;
@@ -103,8 +103,8 @@ describe('In-App Notification Center Integration Tests', () => {
 
     // Create Employee person & assignment
     const empRes = await db.query(
-      `INSERT INTO persons (organization_id, first_name, last_name, email, password_hash, is_active, employment_status)
-       VALUES ($1, 'Jane', 'Employee', $2, $3, true, 'ACTIVE') RETURNING id`,
+      `INSERT INTO persons (organization_id, first_name, last_name, email, password_hash, is_active, employment_status, activation_status)
+       VALUES ($1, 'Jane', 'Employee', $2, $3, true, 'ACTIVE', 'ACTIVE') RETURNING id`,
       [orgId, `emp-${RUN_ID}@notifcorp.com`, passwordHash]
     );
     employeeId = empRes.rows[0].id;

@@ -50,7 +50,7 @@ export class EmployeeAuthService {
     const personResult = await db.query(
       `SELECT
          p.id, p.first_name, p.last_name, p.email, p.employee_id,
-         p.password_hash, p.is_active, p.organization_id
+         p.password_hash, p.is_active, p.activation_status, p.organization_id
        FROM persons p
        WHERE p.organization_id = $1 AND (p.email = $2 OR p.employee_id = $2)`,
       [org.id, identifier]
@@ -64,6 +64,13 @@ export class EmployeeAuthService {
 
     if (!person.is_active) {
       throw new AppError('Your account has been deactivated. Please contact HR.', 403);
+    }
+
+    if (person.activation_status === 'PENDING_ACTIVATION') {
+      throw new AppError(
+        'Please activate your account and set a password first. Use the activation link sent by your admin.',
+        403
+      );
     }
 
     // 3. Verify password

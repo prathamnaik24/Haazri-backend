@@ -144,8 +144,8 @@ describe('Feature #1 Integration Tests — Organizational Structure & Hierarchy'
     const empHash = await bcrypt.hash(empPass, 12);
 
     const empRes = await db.query(
-      `INSERT INTO persons (organization_id, first_name, last_name, email, password_hash, is_active, employee_id)
-       VALUES ($1, 'Rohan', 'Employee', $2, $3, true, 'EMP-HIER-001') RETURNING id`,
+      `INSERT INTO persons (organization_id, first_name, last_name, email, password_hash, is_active, employee_id, activation_status)
+       VALUES ($1, 'Rohan', 'Employee', $2, $3, true, 'EMP-HIER-001', 'ACTIVE') RETURNING id`,
       [orgAId, empEmail, empHash]
     );
     employeePersonAId = empRes.rows[0].id;
@@ -277,8 +277,8 @@ describe('Feature #1 Integration Tests — Organizational Structure & Hierarchy'
     const hrPass = 'HrManagerPass@123';
     const hrHash = await bcrypt.hash(hrPass, 12);
     const hrPersonRes = await db.query(
-      `INSERT INTO persons (organization_id, first_name, last_name, email, password_hash, is_active, employee_id)
-       VALUES ($1, 'Priya', 'HR', $2, $3, true, 'EMP-HR-001') RETURNING id`,
+      `INSERT INTO persons (organization_id, first_name, last_name, email, password_hash, is_active, employee_id, activation_status)
+       VALUES ($1, 'Priya', 'HR', $2, $3, true, 'EMP-HR-001', 'ACTIVE') RETURNING id`,
       [orgAId, hrEmail, hrHash]
     );
     hrManagerPersonAId = hrPersonRes.rows[0].id;
@@ -330,8 +330,8 @@ describe('Feature #1 Integration Tests — Organizational Structure & Hierarchy'
     const hrBPass = 'HrManagerPass@123B';
     const hrBHash = await bcrypt.hash(hrBPass, 12);
     const hrBPersonRes = await db.query(
-      `INSERT INTO persons (organization_id, first_name, last_name, email, password_hash, is_active, employee_id)
-       VALUES ($1, 'Sam', 'HRB', $2, $3, true, 'EMP-HR-B-001') RETURNING id`,
+      `INSERT INTO persons (organization_id, first_name, last_name, email, password_hash, is_active, employee_id, activation_status)
+       VALUES ($1, 'Sam', 'HRB', $2, $3, true, 'EMP-HR-B-001', 'ACTIVE') RETURNING id`,
       [orgBId, hrBEmail, hrBHash]
     );
     const hrBRoleRes = await db.query(

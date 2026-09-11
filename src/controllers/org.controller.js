@@ -23,7 +23,18 @@ export const createEmployee = async (req, res, next) => {
 
     res.status(201).json({
       status: 'success',
-      data: result,
+      data: {
+        employee: result.employee,
+        // invite.invite_link is the shape AdminEmployees.jsx reads
+        invite: {
+          invite_link: result.onboarding.activationLink,
+          email_sent: result.onboarding.emailSent,
+          expires_at: result.onboarding.expiresAt,
+        },
+        // legacy raw token — kept for automated tests
+        invite_token: result.invite_token,
+        expires_at: result.expires_at,
+      },
     });
   } catch (err) {
     next(err);
@@ -76,7 +87,14 @@ export const resendInvite = async (req, res, next) => {
 
     res.status(200).json({
       status: 'success',
-      data: result,
+      data: {
+        invite: {
+          invite_link: result.onboarding.activationLink,
+          email_sent: result.onboarding.emailSent,
+          expires_at: result.onboarding.expiresAt,
+        },
+        invite_token: result.invite_token,
+      },
     });
   } catch (err) {
     next(err);
