@@ -1,6 +1,8 @@
 import { db } from '../db/index.js';
 import { AppError } from '../middlewares/errorHandler.js';
 import { NotificationService } from './notification.service.js';
+import { generatePayslipPdf } from '../utils/pdfGenerator.js';
+import { numberToWords } from '../utils/numberToWords.js';
 
 export class CompensationPayrollService {
   /**
@@ -581,34 +583,117 @@ export class CompensationPayrollService {
   }
 
   /**
-   * Generate or calculate monthly payroll for an employee.
+   * Generate or calculate monthly payroll for an employee automatically.
+   * Strictly accepts ONLY { person_id, month, year }.
    */
   async generateMonthlyPayroll(tenantId, generatedBy, data) {
     const {
       person_id,
       month,
       year,
-      working_days,
-      paid_days,
-      tds,
-      provident_fund,
-      professional_tax,
-      other_deductions,
     } = data;
 
     await this.verifyPersonInTenant(tenantId, person_id);
 
-    if (!month || month < 1 || month > 12) throw new AppError('month must be between 1 and 12', 400);
-    if (!year || year < 2000) throw new AppError('year must be a valid year', 400);
+    const monthNum = parseInt(month, 10);
+    const yearNum = parseInt(year, 10);
 
-    // 1. Fetch current active salary structure
+    if (!monthNum || monthNum < 1 || monthNum > 12) throw new AppError('month must be between 1 and 12', 400);
+    if (!yearNum || yearNum < 2000) throw new AppError('year must be a valid year', 400);
+
+    // 1. Calculate exact month start and end dates (YYYY-MM-DD)
+    const monthStartStr = `${yearNum}-${String(monthNum).padStart(2, '0')}-01`;
+    const totalDaysInMonth = new Date(yearNum, monthNum, 0).getDate();
+    const monthEndStr = `${yearNum}-${String(monthNum).padStart(2, '0')}-${String(totalDaysInMonth).padStart(2, '0')}`;
+
+    // 2. Query company holidays in this month range
+    const holRes = await db.query(
+      `SELECT holiday_date FROM holidays
+       WHERE organization_id = $1 AND is_active = true
+         AND holiday_date >= $2 AND holiday_date <= $3`,
+      [tenantId, monthStartStr, monthEndStr]
+    );
+    const holidayCount = holRes.rows.length;
+    const totalWorkingDays = Math.max(0, totalDaysInMonth - holidayCount);
+
+    // 3. Query actual attendance within month range
+    const attRes = await db.query(
+      `SELECT work_date, status, punctuality_status FROM attendance
+       WHERE person_id = $1
+         AND work_date >= $2 AND work_date <= $3`,
+      [person_id, monthStartStr, monthEndStr]
+    );
+
+    let attendancePresentDays = 0;
+    attRes.rows.forEach(r => {
+      if (r.status === 'HALF_DAY' || r.punctuality_status === 'HALF_DAY') {
+        attendancePresentDays += 0.5;
+      } else {
+        attendancePresentDays += 1;
+      }
+    });
+
+    // 4. Query approved leave requests that OVERLAP with month range [monthStartStr, monthEndStr]
+    // Overlap condition: start_date <= monthEndStr AND end_date >= monthStartStr
+    const leaveRes = await db.query(
+      `SELECT lr.start_date, lr.end_date, lt.is_paid
+       FROM leave_requests lr
+       JOIN leave_types lt ON lt.id = lr.leave_type_id
+       WHERE lr.person_id = $1 AND lr.status = 'Approved'
+         AND lr.start_date <= $2
+         AND lr.end_date >= $3`,
+      [person_id, monthEndStr, monthStartStr]
+    );
+
+    let paidLeaveDays = 0;
+    let unpaidLeaveDays = 0;
+
+    const mStart = new Date(`${monthStartStr}T00:00:00Z`).getTime();
+    const mEnd = new Date(`${monthEndStr}T00:00:00Z`).getTime();
+
+    const toDateStr = (d) => {
+      if (!d) return '';
+      if (typeof d === 'string') return d.substring(0, 10);
+      if (d instanceof Date) {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+      }
+      return String(d).substring(0, 10);
+    };
+
+    leaveRes.rows.forEach(lr => {
+      const lStartStr = toDateStr(lr.start_date);
+      const lEndStr = toDateStr(lr.end_date);
+
+      const lStart = new Date(`${lStartStr}T00:00:00Z`).getTime();
+      const lEnd = new Date(`${lEndStr}T00:00:00Z`).getTime();
+
+      const overlapStart = Math.max(lStart, mStart);
+      const overlapEnd = Math.min(lEnd, mEnd);
+
+      if (overlapEnd >= overlapStart) {
+        const daysInMonth = Math.round((overlapEnd - overlapStart) / (1000 * 60 * 60 * 24)) + 1;
+        if (lr.is_paid) {
+          paidLeaveDays += daysInMonth;
+        } else {
+          unpaidLeaveDays += daysInMonth;
+        }
+      }
+    });
+
+    // Compute actual payable days strictly from attendance + paid leaves + holidays
+    const calculatedPayableDays = attendancePresentDays + paidLeaveDays + holidayCount;
+    const payableDays = Math.min(totalWorkingDays, Math.max(0, calculatedPayableDays));
+
+    // 5. Fetch salary structure & components
     const structRes = await db.query(
       `SELECT base_salary, allowances FROM salary_structures WHERE person_id = $1 AND is_active = true LIMIT 1`,
       [person_id]
     );
     const baseSalary = structRes.rows[0] ? Number(structRes.rows[0].base_salary) : 0;
 
-    // 2. Fetch active salary components
     const compRes = await db.query(
       `SELECT * FROM salary_components WHERE person_id = $1 AND is_active = true`,
       [person_id]
@@ -622,13 +707,19 @@ export class CompensationPayrollService {
     let fixedAllowance = structRes.rows[0] ? Number(structRes.rows[0].allowances) : 0;
     let stockEquity = 0;
 
+    let pfValFromComp = null;
+    let ptValFromComp = null;
+    let tdsValFromComp = null;
+    let otherDedFromComp = null;
+
     const componentBreakdown = {};
 
     compRes.rows.forEach((comp) => {
       const amt = Number(comp.calculated_amount || 0);
-      componentBreakdown[comp.component_type] = amt;
+      const cType = comp.component_type ? comp.component_type.toUpperCase() : '';
+      componentBreakdown[cType] = amt;
 
-      switch (comp.component_type) {
+      switch (cType) {
         case 'BASIC': basicSalary = amt; break;
         case 'HRA': hra = amt; break;
         case 'STANDARD_ALLOWANCE': standardAllowance = amt; break;
@@ -636,18 +727,75 @@ export class CompensationPayrollService {
         case 'LTA': leaveTravelAllowance = amt; break;
         case 'FIXED_ALLOWANCE': fixedAllowance = amt; break;
         case 'STOCK_EQUITY': stockEquity = amt; break;
+
+        case 'PF':
+        case 'PROVIDENT_FUND':
+          pfValFromComp = amt;
+          break;
+        case 'PT':
+        case 'PROFESSIONAL_TAX':
+          ptValFromComp = amt;
+          break;
+        case 'TDS':
+        case 'INCOME_TAX':
+        case 'TAX':
+          tdsValFromComp = amt;
+          break;
+        case 'OTHER_DEDUCTION':
+        case 'OTHER_DEDUCTIONS':
+        case 'DEDUCTION':
+          otherDedFromComp = (otherDedFromComp || 0) + amt;
+          break;
       }
     });
 
-    const totalEarnings = basicSalary + hra + standardAllowance + performanceBonus + leaveTravelAllowance + fixedAllowance + stockEquity;
-    
-    const tdsVal = Number(tds || 0);
-    const pfVal = Number(provident_fund || 0);
-    const ptVal = Number(professional_tax || 0);
-    const otherDedVal = Number(other_deductions || 0);
+    // Prorate earnings based on actual payable days / total working days
+    const prorationFactor = totalWorkingDays > 0 ? (payableDays / totalWorkingDays) : 0;
+    basicSalary = Math.round(basicSalary * prorationFactor * 100) / 100;
+    hra = Math.round(hra * prorationFactor * 100) / 100;
+    standardAllowance = Math.round(standardAllowance * prorationFactor * 100) / 100;
+    performanceBonus = Math.round(performanceBonus * prorationFactor * 100) / 100;
+    leaveTravelAllowance = Math.round(leaveTravelAllowance * prorationFactor * 100) / 100;
+    fixedAllowance = Math.round(fixedAllowance * prorationFactor * 100) / 100;
+    stockEquity = Math.round(stockEquity * prorationFactor * 100) / 100;
 
-    const totalDeductions = tdsVal + pfVal + ptVal + otherDedVal;
-    const netSalary = totalEarnings - totalDeductions;
+    const totalEarnings = basicSalary + hra + standardAllowance + performanceBonus + leaveTravelAllowance + fixedAllowance + stockEquity;
+
+    // 6. Query salary_deductions table if present for this month
+    const dedDbRes = await db.query(
+      `SELECT name, amount FROM salary_deductions
+       WHERE person_id = $1
+         AND deduction_date >= $2 AND deduction_date <= $3`,
+      [person_id, monthStartStr, monthEndStr]
+    );
+
+    let pfFromDb = null;
+    let ptFromDb = null;
+    let tdsFromDb = null;
+    let otherDedFromDb = 0;
+
+    dedDbRes.rows.forEach(d => {
+      const name = (d.name || '').toUpperCase();
+      const amt = Number(d.amount || 0);
+      if (name.includes('PF') || name.includes('PROVIDENT')) {
+        pfFromDb = (pfFromDb || 0) + amt;
+      } else if (name.includes('PT') || name.includes('PROFESSIONAL TAX')) {
+        ptFromDb = (ptFromDb || 0) + amt;
+      } else if (name.includes('TDS') || name.includes('TAX')) {
+        tdsFromDb = (tdsFromDb || 0) + amt;
+      } else {
+        otherDedFromDb += amt;
+      }
+    });
+
+    const pfVal = Number(pfValFromComp ?? pfFromDb ?? 0);
+    const ptVal = Number(ptValFromComp ?? ptFromDb ?? 0);
+    const tdsVal = Number(tdsValFromComp ?? tdsFromDb ?? 0);
+    const otherDedVal = Number(otherDedFromComp ?? otherDedFromDb ?? 0);
+
+    const totalDeductions = pfVal + ptVal + tdsVal + otherDedVal;
+    const netSalary = Math.max(0, totalEarnings - totalDeductions);
+    const amountInWordsStr = numberToWords(netSalary);
 
     // UPSERT into payroll table
     const res = await db.query(
@@ -683,14 +831,36 @@ export class CompensationPayrollService {
          updated_at             = NOW()
        RETURNING *`,
       [
-        person_id, month, year, totalEarnings, totalDeductions, netSalary,
+        person_id, monthNum, yearNum, totalEarnings, totalDeductions, netSalary,
         basicSalary, hra, standardAllowance, performanceBonus, leaveTravelAllowance,
         fixedAllowance, stockEquity, tdsVal, pfVal, ptVal, otherDedVal,
-        working_days || null, paid_days || null, JSON.stringify(componentBreakdown),
+        totalWorkingDays, payableDays, JSON.stringify(componentBreakdown),
       ]
     );
 
-    return res.rows[0];
+    const payrollRecord = res.rows[0];
+
+    // Auto-upsert entry in payslips table
+    const fileName = `payslip_${person_id}_${yearNum}_${monthNum}.pdf`;
+    const fileUrl = `/api/payroll/payslips/${payrollRecord.id}/pdf`;
+
+    await db.query(
+      `INSERT INTO payslips (
+         person_id, payroll_id, month, year, file_name, file_url, file_type, file_size, uploaded_by
+       ) VALUES ($1, $2, $3, $4, $5, $6, 'application/pdf', NULL, $7)
+       ON CONFLICT (person_id, month, year) DO UPDATE SET
+         payroll_id   = EXCLUDED.payroll_id,
+         file_name    = EXCLUDED.file_name,
+         file_url     = EXCLUDED.file_url,
+         uploaded_by  = EXCLUDED.uploaded_by,
+         generated_at = NOW()`,
+      [person_id, payrollRecord.id, monthNum, yearNum, fileName, fileUrl, generatedBy]
+    );
+
+    return {
+      ...payrollRecord,
+      amount_in_words: amountInWordsStr,
+    };
   }
 
   /**
@@ -766,6 +936,145 @@ export class CompensationPayrollService {
 
     const res = await db.query(query, params);
     return res.rows;
+  }
+
+  /**
+   * Get detailed payslip payload (Company, Employee, Bank/Tax, Earnings, Deductions, Net Pay).
+   */
+  async getPayslipDetail(tenantId, identifier, requestingPersonId, userRoles = []) {
+    let payslipRes = await db.query(
+      `SELECT ps.id AS payslip_id, ps.payroll_id, ps.month, ps.year, ps.file_name, ps.file_url,
+              pr.total_earnings, pr.total_deductions, pr.net_salary, pr.basic_salary, pr.hra,
+              pr.standard_allowance, pr.performance_bonus, pr.leave_travel_allowance, pr.fixed_allowance,
+              pr.stock_equity, pr.tds, pr.provident_fund, pr.professional_tax, pr.other_deductions,
+              pr.working_days, pr.paid_days, pr.payment_date, pr.payment_reference, pr.component_breakdown,
+              p.id AS person_id, p.first_name, p.last_name, p.email, p.employee_id, p.workday_id,
+              p.bank_name, p.account_number, p.ifsc_code, p.pan_number,
+              o.name AS org_name, o.metadata AS org_metadata,
+              pos.title AS position_title, d.name AS department_name
+       FROM payslips ps
+       JOIN payroll pr ON pr.id = ps.payroll_id
+       JOIN persons p ON p.id = ps.person_id
+       JOIN organizations o ON o.id = p.organization_id
+       LEFT JOIN position_assignments pa ON pa.person_id = p.id AND pa.is_primary = true AND (pa.end_date IS NULL OR pa.end_date >= current_date)
+       LEFT JOIN positions pos ON pos.id = pa.position_id
+       LEFT JOIN departments d ON d.id = pos.department_id
+       WHERE (ps.id = $1 OR ps.payroll_id = $1) AND p.organization_id = $2`,
+      [identifier, tenantId]
+    );
+
+    if (payslipRes.rows.length === 0) {
+      // Fallback search in payroll table directly
+      const prRes = await db.query(
+        `SELECT pr.id AS payroll_id, pr.month, pr.year,
+                pr.total_earnings, pr.total_deductions, pr.net_salary, pr.basic_salary, pr.hra,
+                pr.standard_allowance, pr.performance_bonus, pr.leave_travel_allowance, pr.fixed_allowance,
+                pr.stock_equity, pr.tds, pr.provident_fund, pr.professional_tax, pr.other_deductions,
+                pr.working_days, pr.paid_days, pr.payment_date, pr.payment_reference, pr.component_breakdown,
+                p.id AS person_id, p.first_name, p.last_name, p.email, p.employee_id, p.workday_id,
+                p.bank_name, p.account_number, p.ifsc_code, p.pan_number,
+                o.name AS org_name, o.metadata AS org_metadata,
+                pos.title AS position_title, d.name AS department_name
+         FROM payroll pr
+         JOIN persons p ON p.id = pr.person_id
+         JOIN organizations o ON o.id = p.organization_id
+         LEFT JOIN position_assignments pa ON pa.person_id = p.id AND pa.is_primary = true AND (pa.end_date IS NULL OR pa.end_date >= current_date)
+         LEFT JOIN positions pos ON pos.id = pa.position_id
+         LEFT JOIN departments d ON d.id = pos.department_id
+         WHERE pr.id = $1 AND p.organization_id = $2`,
+        [identifier, tenantId]
+      );
+
+      if (prRes.rows.length === 0) {
+        throw new AppError('Payslip or payroll record not found', 404);
+      }
+      payslipRes = prRes;
+    }
+
+    const row = payslipRes.rows[0];
+
+    // RBAC & IDOR check
+    const isOrgAdmin = userRoles.includes('Org Admin') || userRoles.includes('HR Manager') || userRoles.includes('CEO');
+    if (!isOrgAdmin && row.person_id !== requestingPersonId) {
+      throw new AppError('Forbidden: You do not have permission to access another employee\'s payslip', 403);
+    }
+
+    let maskedAccount = null;
+    if (row.account_number) {
+      const rawAcc = String(row.account_number).trim();
+      maskedAccount = rawAcc.length > 4 ? `XXXX XXXX ${rawAcc.slice(-4)}` : rawAcc;
+    }
+
+    const earnings = [
+      { name: 'Basic Salary', amount: Number(row.basic_salary || 0) },
+      { name: 'HRA', amount: Number(row.hra || 0) },
+      { name: 'Standard Allowance', amount: Number(row.standard_allowance || 0) },
+      { name: 'Performance Bonus', amount: Number(row.performance_bonus || 0) },
+      { name: 'Leave Travel Allowance (LTA)', amount: Number(row.leave_travel_allowance || 0) },
+      { name: 'Fixed Allowance', amount: Number(row.fixed_allowance || 0) },
+      { name: 'Stock / Equity', amount: Number(row.stock_equity || 0) },
+    ].filter(e => e.amount > 0);
+
+    const deductions = [
+      { name: 'Provident Fund (PF)', amount: Number(row.provident_fund || 0) },
+      { name: 'Professional Tax (PT)', amount: Number(row.professional_tax || 0) },
+      { name: 'Tax Deducted at Source (TDS)', amount: Number(row.tds || 0) },
+      { name: 'Other Deductions', amount: Number(row.other_deductions || 0) },
+    ].filter(d => d.amount > 0);
+
+    const netSalary = Number(row.net_salary || 0);
+    const amountInWordsStr = numberToWords(netSalary);
+    const orgMeta = row.org_metadata || {};
+
+    return {
+      payslip_id: row.payslip_id || null,
+      payroll_id: row.payroll_id,
+      organization: {
+        name: row.org_name || 'Haazri',
+        email: orgMeta.email || null,
+        phone: orgMeta.phone || null,
+        address: orgMeta.address || null,
+        logo_url: orgMeta.logo_url || null,
+      },
+      employee: {
+        id: row.person_id,
+        full_name: `${row.first_name || ''} ${row.last_name || ''}`.trim(),
+        email: row.email,
+        employee_id: row.employee_id,
+        workday_id: row.workday_id,
+        designation: row.position_title || null,
+        department: row.department_name || null,
+      },
+      bank: {
+        bank_name: row.bank_name || null,
+        masked_account_number: maskedAccount,
+        ifsc_code: row.ifsc_code || null,
+        pan_number: row.pan_number || null,
+      },
+      payroll: {
+        month: row.month,
+        year: row.year,
+        payment_date: row.payment_date ? new Date(row.payment_date).toISOString().split('T')[0] : null,
+        working_days: row.working_days,
+        paid_days: row.paid_days,
+        total_earnings: Number(row.total_earnings || 0),
+        total_deductions: Number(row.total_deductions || 0),
+        net_salary: netSalary,
+        amount_in_words: amountInWordsStr,
+      },
+      earnings,
+      deductions,
+    };
+  }
+
+  /**
+   * Generates payslip PDF buffer for download.
+   */
+  async generatePayslipPdfBuffer(tenantId, identifier, requestingPersonId, userRoles = []) {
+    const detail = await this.getPayslipDetail(tenantId, identifier, requestingPersonId, userRoles);
+    const pdfBuffer = await generatePayslipPdf(detail);
+    const fileName = `payslip_${detail.employee.employee_id || detail.employee.id}_${detail.payroll.year}_${detail.payroll.month}.pdf`;
+    return { pdfBuffer, fileName, detail };
   }
 
   /**

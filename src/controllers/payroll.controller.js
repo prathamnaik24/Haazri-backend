@@ -35,7 +35,7 @@ export const getPayrollRecordById = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-/** POST /api/payroll/generate — Generate/compute monthly payroll */
+/** POST /api/payroll/generate — Generate/compute monthly payroll automatically */
 export const generatePayroll = async (req, res, next) => {
   try {
     const result = await service.generateMonthlyPayroll(
@@ -81,6 +81,34 @@ export const getPersonPayslips = async (req, res, next) => {
       req.query.year
     );
     res.status(200).json({ status: 'success', data: result });
+  } catch (err) { next(err); }
+};
+
+/** GET /api/payroll/payslips/:id — View single payslip detail JSON */
+export const getPayslipDetail = async (req, res, next) => {
+  try {
+    const result = await service.getPayslipDetail(
+      req.currentTenantId,
+      req.params.id,
+      req.user.person_id,
+      req.user.roles || []
+    );
+    res.status(200).json({ status: 'success', data: result });
+  } catch (err) { next(err); }
+};
+
+/** GET /api/payroll/payslips/:id/pdf — View/Download payslip PDF */
+export const downloadPayslipPdf = async (req, res, next) => {
+  try {
+    const { pdfBuffer, fileName } = await service.generatePayslipPdfBuffer(
+      req.currentTenantId,
+      req.params.id,
+      req.user.person_id,
+      req.user.roles || []
+    );
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
+    res.status(200).send(pdfBuffer);
   } catch (err) { next(err); }
 };
 

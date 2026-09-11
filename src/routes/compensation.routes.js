@@ -32,12 +32,12 @@ router.patch('/increments/:id/status', requireRole('Org Admin', 'HR Manager', 'C
 
 // Employee compensation & base salary structure
 router.get('/person/:id', requireRole('Org Admin', 'HR Manager', 'CEO'), getEmployeeCompensation);
-router.post('/person/:id/structure', requireRole('Org Admin', 'HR Manager'), upsertSalaryStructure);
+router.post('/person/:id/structure', requireRole('Org Admin'), upsertSalaryStructure);
 
 // Salary components
 router.get('/person/:id/components', requireRole('Org Admin', 'HR Manager', 'CEO'), getComponents);
-router.post('/person/:id/components', requireRole('Org Admin', 'HR Manager'), addComponent);
-router.patch('/components/:id', requireRole('Org Admin', 'HR Manager'), updateComponent);
-router.delete('/components/:id', requireRole('Org Admin', 'HR Manager'), deleteComponent);
+router.post('/person/:id/components', requireRole('Org Admin'), addComponent);
+router.patch('/components/:id', requireRole('Org Admin'), updateComponent);
+router.delete('/components/:id', requireRole('Org Admin'), deleteComponent);
 
 export default router;
